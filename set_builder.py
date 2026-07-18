@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
 import os
 import re
@@ -56,6 +57,18 @@ from plot_set_energy import (
 Key = Tuple[int, str]
 
 DEFAULT_SHAPE = "0:3,0.35:6,0.6:6,1:9"
+
+# Named energy-phase groups a set can be segmented into, in set order. A
+# phased build restricts each segment's candidate pool to only tracks tagged
+# with the matching phase, instead of picking freely by energy value alone.
+PHASES = ["opening", "first_boost", "plateau", "second_boost", "closing"]
+DEFAULT_PHASE_SHAPE = [0.2, 0.2, 0.2, 0.2, 0.2]
+
+
+class BuildError(ValueError):
+    """Raised for user-facing errors during set building (bad --pin/--phase-tags
+    input, not enough tagged candidates, etc.), as opposed to programming bugs.
+    Caught at the CLI boundary and turned into a plain SystemExit message."""
 
 # Penalty applied per transition category during the local-search refinement.
 # Lower = smoother. "other" (off-key clash) is heavily penalized; classify_transition
@@ -292,6 +305,85 @@ def select_and_place(
 
 
 # ------------------------------
+# Phase groups: constrain each segment of the set to a tagged subset
+# ------------------------------
+def phase_segment_ranges(n: int, segments: List[float]) -> Dict[str, range]:
+    """Split 1..n into 5 contiguous position ranges, one per PHASES, sized by
+    the given proportions (must sum to ~1.0). Cumulative rounding keeps the
+    ranges partitioning 1..n exactly, with no gaps or overlaps."""
+    if len(segments) != len(PHASES):
+        raise BuildError(f"--phase-shape must have {len(PHASES)} values (one per phase: {', '.join(PHASES)})")
+    total = sum(segments)
+    if not math.isclose(total, 1.0, abs_tol=1e-6):
+        raise BuildError(f"--phase-shape values must sum to 1.0 (got {total})")
+
+    boundaries = [0]
+    cumulative = 0.0
+    for s in segments:
+        cumulative += s
+        boundaries.append(round(cumulative * n))
+    boundaries[-1] = n  # guard against rounding drift
+
+    return {
+        phase: range(boundaries[i] + 1, boundaries[i + 1] + 1)
+        for i, phase in enumerate(PHASES)
+    }
+
+
+def parse_phase_tags(path: str, pool: List[Track], eligible_ids: set) -> Dict[int, str]:
+    """Load a {title_substring: phase_name} JSON mapping, resolved via the same
+    fuzzy substring match parse_pins() uses. CLI-only convenience for testing
+    the phased algorithm before the web app's tagging UI exists."""
+    with open(path) as f:
+        raw = json.load(f)
+
+    phase_of: Dict[int, str] = {}
+    for needle, phase in raw.items():
+        phase = phase.strip().lower().replace(" ", "_")
+        if phase not in PHASES:
+            raise BuildError(f"--phase-tags: unknown phase '{phase}' for '{needle}' (expected one of {PHASES})")
+
+        matches = [t for t in pool if needle.lower() in t.label.lower()]
+        if not matches:
+            raise BuildError(f"--phase-tags: '{needle}' matched no track in the input file")
+        if len(matches) > 1:
+            listing = "\n".join(f"  - {t.label}" for t in matches[:10])
+            raise BuildError(f"--phase-tags: '{needle}' matched {len(matches)} tracks, be more specific:\n{listing}")
+        track = matches[0]
+        if track.idx not in eligible_ids:
+            raise BuildError(
+                f"--phase-tags: '{needle}' matched '{track.label}' but it has no parseable "
+                f"Key and/or 'Energy N' comment, so it can't be placed."
+            )
+        phase_of[track.idx] = phase
+    return phase_of
+
+
+def select_and_place_phased(
+    candidates: List[Track],
+    free_positions: List[int],
+    targets: List[float],
+    phase_of: Dict[int, str],
+    segment_ranges: Dict[str, range],
+) -> Dict[int, Track]:
+    """Run select_and_place() once per phase segment, restricted to that
+    segment's positions and only candidates tagged with that phase."""
+    placement: Dict[int, Track] = {}
+    for phase in PHASES:
+        seg_positions = [p for p in free_positions if p in segment_ranges[phase]]
+        if not seg_positions:
+            continue
+        seg_candidates = [t for t in candidates if phase_of.get(t.idx) == phase]
+        if len(seg_candidates) < len(seg_positions):
+            raise BuildError(
+                f"Not enough '{phase}'-tagged eligible track(s) ({len(seg_candidates)}) "
+                f"for {len(seg_positions)} position(s) in that segment."
+            )
+        placement.update(select_and_place(seg_candidates, seg_positions, targets))
+    return placement
+
+
+# ------------------------------
 # Local search: swap-based refinement for key compatibility
 # ------------------------------
 def achieved_energy_curve(order: List[Track], key_energy_blend: float) -> List[float]:
@@ -339,6 +431,7 @@ def local_search(
     strict: bool,
     max_iterations: int,
     key_energy_blend: float,
+    segment_of_position: Optional[Dict[int, str]] = None,
 ) -> Tuple[List[Track], float]:
     order = order[:]
     movable = [i for i in range(len(order)) if (i + 1) not in pinned_positions]
@@ -350,6 +443,8 @@ def local_search(
         for a in range(len(movable)):
             for b in range(a + 1, len(movable)):
                 i, j = movable[a], movable[b]
+                if segment_of_position is not None and segment_of_position.get(i + 1) != segment_of_position.get(j + 1):
+                    continue  # never swap tracks across a phase-segment boundary
                 order[i], order[j] = order[j], order[i]
                 new_cost = sequence_cost(order, targets, key_weight, strict, key_energy_blend)
                 if new_cost < best_cost - 1e-9:
@@ -635,6 +730,8 @@ def main() -> None:
     ap.add_argument("--playlist-name", default=None, help="Name for the playlist node in --rekordbox-xml (default: input filename + current timestamp, so re-running doesn't collide with a stale playlist already in Rekordbox).")
     ap.add_argument("--library-base-dir", default="../SoundCloud-LQ", help="Base folder sc_sync.py downloads into, used to resolve tracks to real files for --rekordbox-xml / --playlist-folder (default: ../SoundCloud-LQ, alongside the anomaly/ project folder).")
     ap.add_argument("--playlist-folder", default=None, help="Create a folder of numbered symlinks to the real audio files, in set order - select-all and drag straight into a new empty Rekordbox playlist. Avoids Rekordbox's XML-import path-matching quirks entirely; use this if --rekordbox-xml silently drops tracks already in your library.")
+    ap.add_argument("--phase-tags", default=None, help=f"Path to a JSON file mapping {{title_substring: phase_name}} to constrain each segment of the set to only tracks tagged with the matching phase ({', '.join(PHASES)}). CLI-only convenience for testing before the web app's tagging UI exists.")
+    ap.add_argument("--phase-shape", default=None, help="Comma-separated proportions for the 5 phase segments in order (opening,first_boost,plateau,second_boost,closing), must sum to 1.0. Default: even split (0.2 each). Only used together with --phase-tags.")
     args = ap.parse_args()
 
     pool = load_pool(args.tsv)
@@ -682,7 +779,31 @@ def main() -> None:
         targets = target_energy_curve(shape_points, n)
         free_positions = [p for p in free_positions if p <= n]
 
-    placement = select_and_place(candidates, free_positions, targets)
+    phase_untagged: List[Track] = []
+    segment_of_position: Optional[Dict[int, str]] = None
+    try:
+        if args.phase_tags:
+            phase_of = parse_phase_tags(args.phase_tags, pool, eligible_ids)
+            phase_untagged = [t for t in candidates if t.idx not in phase_of]
+            if phase_untagged:
+                print(f"NOTE: {len(phase_untagged)} eligible track(s) have no phase tag and are excluded from this phased build:")
+                for t in phase_untagged[:20]:
+                    print(f"  - {t.label}")
+                if len(phase_untagged) > 20:
+                    print(f"  ... and {len(phase_untagged) - 20} more")
+            candidates = [t for t in candidates if t.idx in phase_of]
+
+            phase_shape = (
+                [float(x) for x in args.phase_shape.split(",")] if args.phase_shape else DEFAULT_PHASE_SHAPE
+            )
+            segment_ranges = phase_segment_ranges(n, phase_shape)
+            segment_of_position = {p: phase for phase, rng in segment_ranges.items() for p in rng}
+            placement = select_and_place_phased(candidates, free_positions, targets, phase_of, segment_ranges)
+        else:
+            placement = select_and_place(candidates, free_positions, targets)
+    except BuildError as e:
+        raise SystemExit(str(e))
+
     order_by_pos: Dict[int, Track] = {}
     order_by_pos.update(pins)
     order_by_pos.update(placement)
@@ -690,7 +811,7 @@ def main() -> None:
 
     order, _ = local_search(
         order, pinned_positions, targets, args.key_weight, args.key_strict,
-        args.iterations, args.key_energy_blend,
+        args.iterations, args.key_energy_blend, segment_of_position,
     )
 
     bad_transitions = []
@@ -715,9 +836,10 @@ def main() -> None:
 
     if args.excluded_report:
         selected_ids = {t.idx for t in order}
-        not_selected = [t for t in eligible if t.idx not in selected_ids]
-        write_excluded_report(not_selected, excluded, args.excluded_report)
-        print(f"\nWrote {args.excluded_report} ({len(not_selected)} not selected, {len(excluded)} untagged)")
+        not_selected = [t for t in eligible if t.idx not in selected_ids and t not in phase_untagged]
+        all_untagged = excluded + phase_untagged
+        write_excluded_report(not_selected, all_untagged, args.excluded_report)
+        print(f"\nWrote {args.excluded_report} ({len(not_selected)} not selected, {len(all_untagged)} untagged)")
 
     if args.plot_out or args.show:
         plot_result(order, targets, args.key_energy_blend, args.plot_out, args.show)
