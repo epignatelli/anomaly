@@ -127,3 +127,11 @@ Endpoints:
 ## Verification approach summary
 
 Every milestone has a concrete manual check (diff CLI output, curl round-trip, or in-browser confirmation) before moving to the next — no milestone depends on trusting an earlier one blindly. The core algorithm (Milestone 1) is fully testable from the terminal before a single line of web code exists, so the riskiest new logic gets verified independent of the UI.
+
+## Future phase (v2): standalone portable build
+
+The real deployment target is a USB drive containing the Rekordbox export, the audio files, and this app, plugged into *any* laptop (own machine, borrowed, venue laptop) with **nothing pre-installed** — no system Python, no `pip install`, no internet access required at the venue. That rules out a plain "clone the repo and run `uvicorn`" workflow.
+
+The plan is a standalone executable via PyInstaller (or Nuitka), bundling the FastAPI backend and all Python dependencies, that starts the server and opens the browser automatically, resolving data paths relative to its own location on the USB drive rather than a fixed absolute path. This requires a separate build per target OS (PyInstaller bundles aren't cross-platform) — at minimum macOS (Apple Silicon) and Windows (x64), the latter needing an actual Windows machine or CI runner to build and test.
+
+This is deliberately **out of scope for v1** — tracked as its own milestone ("v2: Standalone portable build") to pick up once the phase-groups algorithm and web app are working, not before. See issue #11.
