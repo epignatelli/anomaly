@@ -34,9 +34,21 @@ from set_builder import (  # noqa: E402
 
 from webapp import build_service, config, settings_store
 from webapp.rekordbox_reader import RBNode, flatten_playlists, parse_library, playlist_tracks
-from webapp.tag_store import add_global_tag, add_tag, get_tags, remove_global_tag, remove_tag
+from webapp.tag_store import (
+    add_global_tag,
+    add_tag,
+    get_constraints,
+    get_tags,
+    remove_global_tag,
+    remove_tag,
+    set_constraint,
+)
 
 app = FastAPI(title="anomaly")
+
+
+class ConstraintUpdate(BaseModel):
+    state: Optional[str] = None
 
 
 class SettingsUpdate(BaseModel):
@@ -111,7 +123,9 @@ def list_tracks(playlist_path: str):
     collection, root = _load_library()
     node = _find_playlist(root, playlist_path)
     tracks = playlist_tracks(node, collection)
-    tag_map = get_tags(config.TAGS_DB_PATH, playlist_path, [t.track_id for t in tracks])
+    track_ids = [t.track_id for t in tracks]
+    tag_map = get_tags(config.TAGS_DB_PATH, playlist_path, track_ids)
+    constraint_map = get_constraints(config.TAGS_DB_PATH, playlist_path, track_ids)
 
     return [
         {
@@ -124,9 +138,18 @@ def list_tracks(playlist_path: str):
             "duration_s": t.total_time_s,
             "genre": t.genre,
             "phases": tag_map.get(t.track_id, []),
+            "constraint": constraint_map.get(t.track_id),
         }
         for t in tracks
     ]
+
+
+@app.put("/api/playlists/{playlist_path:path}/constraint/{track_id}", status_code=204)
+def update_track_constraint(playlist_path: str, track_id: str, body: ConstraintUpdate):
+    try:
+        set_constraint(config.TAGS_DB_PATH, playlist_path, track_id, body.state)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.put("/api/playlists/{playlist_path:path}/tags/{track_id}/{phase}", status_code=204)

@@ -35,7 +35,17 @@ CREATE TABLE IF NOT EXISTS track_tags (
     updated_at    TEXT NOT NULL,
     PRIMARY KEY (playlist_path, track_id, phase)
 );
+
+CREATE TABLE IF NOT EXISTS track_constraints (
+    playlist_path TEXT NOT NULL,
+    track_id      TEXT NOT NULL,
+    state         TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    PRIMARY KEY (playlist_path, track_id)
+);
 """
+
+CONSTRAINT_STATES = ("ignore", "include")
 
 # Renaming a phase name in set_builder.PHASES orphans any tags already
 # stored under the old name (the phase column is a free-text string, not
@@ -51,7 +61,7 @@ _migrated_dbs: set = set()
 
 def _connect(db_path: Union[str, Path]) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
-    conn.execute(_SCHEMA)
+    conn.executescript(_SCHEMA)
     key = str(db_path)
     if key not in _migrated_dbs:
         for old, new in _PHASE_RENAMES.items():
@@ -117,3 +127,41 @@ def get_tags(db_path: Union[str, Path], playlist_path: str, track_ids: List[str]
         target.setdefault(tid, []).append(phase)
 
     return {tid: (exact[tid] if tid in exact else global_default.get(tid, [])) for tid in track_ids}
+
+
+def set_constraint(db_path: Union[str, Path], playlist_path: str, track_id: str, state: Union[str, None]) -> None:
+    """Set a track's build constraint for this playlist: 'ignore' (never
+    include when building a set), 'include' (always include), or None to
+    reset to the default (no constraint - the algorithm decides freely).
+    Playlist-scoped only, no global fallback - this is meant as a per-set
+    decision, not a durable property of the track."""
+    if state is not None and state not in CONSTRAINT_STATES:
+        raise ValueError(f"Unknown constraint state '{state}' (expected one of {CONSTRAINT_STATES}, or None to reset)")
+    with _connect(db_path) as conn:
+        if state is None:
+            conn.execute(
+                "DELETE FROM track_constraints WHERE playlist_path = ? AND track_id = ?",
+                (playlist_path, track_id),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO track_constraints (playlist_path, track_id, state, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(playlist_path, track_id) DO UPDATE SET state=excluded.state, updated_at=excluded.updated_at",
+                (playlist_path, track_id, state, datetime.now(timezone.utc).isoformat()),
+            )
+
+
+def get_constraints(db_path: Union[str, Path], playlist_path: str, track_ids: List[str]) -> Dict[str, Union[str, None]]:
+    """Each track_id's current constraint state ('ignore'/'include'), or None
+    if unset."""
+    if not track_ids:
+        return {}
+    with _connect(db_path) as conn:
+        placeholders = ",".join("?" for _ in track_ids)
+        rows = conn.execute(
+            f"SELECT track_id, state FROM track_constraints "
+            f"WHERE playlist_path = ? AND track_id IN ({placeholders})",
+            (playlist_path, *track_ids),
+        ).fetchall()
+    states = dict(rows)
+    return {tid: states.get(tid) for tid in track_ids}

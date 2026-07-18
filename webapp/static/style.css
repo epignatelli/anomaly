@@ -190,6 +190,29 @@ label { display: block; margin-bottom: 4px; color: var(--text-dim); font-size: 1
 .track-title { font-weight: 500; }
 .track-artist { color: var(--text-dim); font-size: 12px; }
 
+.constraint-btn {
+  display: inline-block;
+  min-width: 90px;
+  text-align: center;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.constraint-btn:hover { border-color: var(--accent); color: var(--text); }
+.constraint-btn.ignore { background: rgba(229, 83, 75, 0.15); border-color: var(--bad); color: var(--bad); font-weight: 500; }
+.constraint-btn.include { background: rgba(76, 175, 80, 0.15); border-color: var(--good); color: var(--good); font-weight: 500; }
+.constraint-btn.loading { opacity: 0.5; cursor: wait; }
+
+tr.constraint-ignore { opacity: 0.5; }
+.card.constraint-ignore { opacity: 0.4; }
+.card.constraint-include { border-color: var(--good); }
+
 .note {
   background: var(--bg-panel);
   border: 1px solid var(--border);
