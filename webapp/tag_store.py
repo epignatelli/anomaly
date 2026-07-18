@@ -37,10 +37,27 @@ CREATE TABLE IF NOT EXISTS track_tags (
 );
 """
 
+# Renaming a phase name in set_builder.PHASES orphans any tags already
+# stored under the old name (the phase column is a free-text string, not
+# validated against PHASES at the DB level) - track renames here so existing
+# tags self-heal on the next connection instead of silently disappearing.
+_PHASE_RENAMES = {
+    "plateau": "valley",
+    "first_boost": "first_peak",
+    "second_boost": "second_peak",
+}
+_migrated_dbs: set = set()
+
 
 def _connect(db_path: Union[str, Path]) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.execute(_SCHEMA)
+    key = str(db_path)
+    if key not in _migrated_dbs:
+        for old, new in _PHASE_RENAMES.items():
+            conn.execute("UPDATE OR IGNORE track_tags SET phase = ? WHERE phase = ?", (new, old))
+        conn.commit()
+        _migrated_dbs.add(key)
     return conn
 
 
