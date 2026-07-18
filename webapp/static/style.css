@@ -205,13 +205,14 @@ label { display: block; margin-bottom: 4px; color: var(--text-dim); font-size: 1
   white-space: nowrap;
 }
 .constraint-btn:hover { border-color: var(--accent); color: var(--text); }
-.constraint-btn.ignore { background: rgba(229, 83, 75, 0.15); border-color: var(--bad); color: var(--bad); font-weight: 500; }
-.constraint-btn.include { background: rgba(76, 175, 80, 0.15); border-color: var(--good); color: var(--good); font-weight: 500; }
+.constraint-btn.constraint-ignore { background: rgba(229, 83, 75, 0.15); border-color: var(--bad); color: var(--bad); font-weight: 500; }
+.constraint-btn.constraint-include { background: rgba(76, 175, 80, 0.2); border-color: var(--good); color: var(--good); font-weight: 600; }
 .constraint-btn.loading { opacity: 0.5; cursor: wait; }
 
 tr.constraint-ignore { opacity: 0.5; }
+tr.constraint-include { background: rgba(76, 175, 80, 0.08); box-shadow: inset 3px 0 0 var(--good); }
 .card.constraint-ignore { opacity: 0.4; }
-.card.constraint-include { border-color: var(--good); }
+.card.constraint-include { border-color: var(--good); box-shadow: 0 0 0 1px var(--good); }
 
 .note {
   background: var(--bg-panel);
