@@ -10,7 +10,7 @@ Tools for building and mixing DJ sets: syncing tracks from SoundCloud, analyzing
 
 ## Roadmap
 
-See [`docs/PLAN.md`](docs/PLAN.md) for the current plan: adding named energy-phase groups (opening / first boost / plateau / second boost / closing) that constrain which tracks the algorithm can pick for each segment of the set, and a small local web app for browsing a Rekordbox library, tagging tracks into those phase groups visually, and building a set with one click.
+See [`docs/PLAN.md`](docs/PLAN.md) for the current plan: adding named energy-phase groups (opening / first peak / valley / second peak / closing) that constrain which tracks the algorithm can pick for each segment of the set, and a small local web app for browsing a Rekordbox library, tagging tracks into those phase groups visually, and building a set with one click.
 
 ## Layout
 

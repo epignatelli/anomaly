@@ -4,13 +4,13 @@
 
 `set_builder.py` suggests a DJ set order balancing an energy shape (slow start → rise → plateau → rise) against harmonic key compatibility (rules reused from `plot_set_energy.py`). It currently optimizes purely by matching each track's own intrinsic `Energy N` tag to a target curve, using Rekordbox TSV exports as input and either a Rekordbox-XML or a symlink-folder as output (the XML path has a confirmed bug — Rekordbox silently drops tracks whose file location is already in the live library under a different internal TrackID than the one we generate, so the symlink-folder-drag method is the reliable export path).
 
-The next want: group tracks into 5 named phases — **opening, first boost, plateau, second boost, closing** — and have the algorithm pick candidates for each segment of the set *only* from the matching phase group, rather than picking freely by energy value alone. This requires tracks to be tagged into these groups somehow. Rekordbox's `Genre`/`Message` columns already have sparse, informal versions of this (`Peak`/`Upper`/`Outro`/`Downer`) on only a handful of tracks — not complete enough to build on.
+The next want: group tracks into 5 named phases — **opening, first peak, valley, second peak, closing** — and have the algorithm pick candidates for each segment of the set *only* from the matching phase group, rather than picking freely by energy value alone. (Originally "plateau"/"boost" instead of "valley"/"peak" - renamed once actually building sets showed a flat hold between two peaks reads as redundant fatigue rather than the tension-and-release a real dip provides, and "peak" better names what the boost is building toward.) This requires tracks to be tagged into these groups somehow. Rekordbox's `Genre`/`Message` columns already have sparse, informal versions of this (`Peak`/`Upper`/`Outro`/`Downer`) on only a handful of tracks — not complete enough to build on.
 
 Rather than hand-maintaining a text-file mapping, the plan is a small local web app: browse the Rekordbox library/playlists, tag tracks into the 5 phase groups visually, and hit a "Build Set" button that runs the same algorithm with all the flags `set_builder.py` already exposes (num_tracks/target_minutes, pins, shape, key_strict, key_weight, key_energy_blend) plus the new phase-group constraint. Intended outcome: replace the CLI-flag-and-hand-edited-file workflow with a visual one, without discarding or duplicating the algorithm already built and verified.
 
 ## Guiding decisions
 
-- **Phase-tag storage: per-playlist, with a global-default fallback.** A track's role is set-dependent (an "opener" in one set might be "plateau" filler in another). Store tags keyed by `(playlist_path, track_id)`; if no playlist-specific tag exists, fall back to a global-default tag for that track; otherwise untagged.
+- **Phase-tag storage: per-playlist, with a global-default fallback.** A track's role is set-dependent (an "opener" in one set might be "valley" filler in another). Store tags keyed by `(playlist_path, track_id)`; if no playlist-specific tag exists, fall back to a global-default tag for that track; otherwise untagged.
 - **v1 data source: static `rekordbox.xml` export, not Rekordbox's live database.** Rekordbox 6/7's live library is an encrypted SQLCipher DB; the community `pyrekordbox` project can read it but is version-fragile and unevaluated here. v1 reads the same kind of XML export the user already manually re-triggers today. Live-DB access is an explicit future phase, not v1 scope.
 - **Backend: FastAPI**, not Flask — the build endpoint has ~10 typed numeric/bool parameters mirroring the CLI flags; Pydantic gives validation and self-documenting `/docs` for free at no real dependency-weight cost over Flask.
 - **No Node/build step.** Server-rendered Jinja2 + vanilla JS (optionally htmx via CDN tag) for interactivity. This stays a local, single-user, no-auth tool.
@@ -42,7 +42,7 @@ Internal `SystemExit`s (in `parse_pins`, and the pool-shrink-if-not-enough-candi
 **Phase-group-constrained selection**, only active when `phase_groups` is passed:
 
 ```python
-PHASES = ["opening", "first_boost", "plateau", "second_boost", "closing"]
+PHASES = ["opening", "first_peak", "valley", "second_peak", "closing"]
 
 def phase_segment_ranges(n: int, segments: List[float]) -> Dict[str, range]:
     """Split n positions into 5 contiguous ranges by cumulative rounding of the

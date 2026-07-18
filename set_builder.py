@@ -61,7 +61,7 @@ DEFAULT_SHAPE = "0:3,0.35:6,0.6:6,1:9"
 # Named energy-phase groups a set can be segmented into, in set order. A
 # phased build restricts each segment's candidate pool to only tracks tagged
 # with the matching phase, instead of picking freely by energy value alone.
-PHASES = ["opening", "first_boost", "plateau", "second_boost", "closing"]
+PHASES = ["opening", "first_peak", "valley", "second_peak", "closing"]
 DEFAULT_PHASE_SHAPE = [0.2, 0.2, 0.2, 0.2, 0.2]
 
 
@@ -901,7 +901,7 @@ def main() -> None:
     ap.add_argument("--library-base-dir", default="../SoundCloud-LQ", help="Base folder sc_sync.py downloads into, used to resolve tracks to real files for --rekordbox-xml / --playlist-folder (default: ../SoundCloud-LQ, alongside the anomaly/ project folder).")
     ap.add_argument("--playlist-folder", default=None, help="Create a folder of numbered symlinks to the real audio files, in set order - select-all and drag straight into a new empty Rekordbox playlist. Avoids Rekordbox's XML-import path-matching quirks entirely; use this if --rekordbox-xml silently drops tracks already in your library.")
     ap.add_argument("--phase-tags", default=None, help=f"Path to a JSON file mapping {{title_substring: phase_name}} to constrain each segment of the set to only tracks tagged with the matching phase ({', '.join(PHASES)}). CLI-only convenience for testing before the web app's tagging UI exists.")
-    ap.add_argument("--phase-shape", default=None, help="Comma-separated proportions for the 5 phase segments in order (opening,first_boost,plateau,second_boost,closing), must sum to 1.0. Default: even split (0.2 each). Only used together with --phase-tags.")
+    ap.add_argument("--phase-shape", default=None, help="Comma-separated proportions for the 5 phase segments in order (opening,first_peak,valley,second_peak,closing), must sum to 1.0. Default: even split (0.2 each). Only used together with --phase-tags.")
     args = ap.parse_args()
 
     pool = load_pool(args.tsv)

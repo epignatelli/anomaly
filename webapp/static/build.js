@@ -116,9 +116,9 @@ async function onSubmit(e) {
     phase_shape: usePhaseTags
       ? [
           parseFloat(document.getElementById("ps-opening").value),
-          parseFloat(document.getElementById("ps-first-boost").value),
-          parseFloat(document.getElementById("ps-plateau").value),
-          parseFloat(document.getElementById("ps-second-boost").value),
+          parseFloat(document.getElementById("ps-first-peak").value),
+          parseFloat(document.getElementById("ps-valley").value),
+          parseFloat(document.getElementById("ps-second-peak").value),
           parseFloat(document.getElementById("ps-closing").value),
         ]
       : null,

@@ -3,11 +3,11 @@ tag_store.py
 ------------
 SQLite-backed storage for phase-group tags, keyed by (playlist_path,
 track_id). A track can carry more than one phase tag at once (e.g. both
-"opening" and "plateau"), so each active tag is its own row rather than a
+"opening" and "valley"), so each active tag is its own row rather than a
 single column value.
 
 A track's role in a set is set-dependent (an "opener" in one set might be
-"plateau" filler in another), so tags are scoped per playlist by default,
+"valley" filler in another), so tags are scoped per playlist by default,
 with a global fallback (playlist_path='') for convenience so you don't have
 to re-tag a track in every playlist it happens to appear in. Fallback rule:
 if a track has ANY playlist-specific tag rows (even just one), those are its

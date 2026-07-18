@@ -1,9 +1,9 @@
-const PHASES = ["opening", "first_boost", "plateau", "second_boost", "closing"];
+const PHASES = ["opening", "first_peak", "valley", "second_peak", "closing"];
 const PHASE_LABELS = {
   opening: "Opening",
-  first_boost: "First Boost",
-  plateau: "Plateau",
-  second_boost: "Second Boost",
+  first_peak: "First Peak",
+  valley: "Valley",
+  second_peak: "Second Peak",
   closing: "Closing",
 };
 
