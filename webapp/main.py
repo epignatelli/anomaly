@@ -32,7 +32,7 @@ from set_builder import (  # noqa: E402
     write_rekordbox_xml,
 )
 
-from webapp import build_service, config
+from webapp import build_service, config, settings_store
 from webapp.rekordbox_reader import RBNode, flatten_playlists, parse_library, playlist_tracks
 from webapp.tag_store import get_tags, set_global_default, set_tag
 
@@ -41,6 +41,10 @@ app = FastAPI(title="anomaly")
 
 class TagUpdate(BaseModel):
     phase: Optional[str] = None
+
+
+class SettingsUpdate(BaseModel):
+    rekordbox_xml_path: str
 
 
 class BuildRequest(BaseModel):
@@ -64,7 +68,7 @@ class ExportRequest(BaseModel):
 
 
 def _load_library() -> tuple[dict, RBNode]:
-    return parse_library(config.REKORDBOX_XML_PATH)
+    return parse_library(settings_store.get_rekordbox_xml_path())
 
 
 def _find_playlist(root: RBNode, playlist_path: str) -> RBNode:
@@ -73,6 +77,21 @@ def _find_playlist(root: RBNode, playlist_path: str) -> RBNode:
     if node is None:
         raise HTTPException(status_code=404, detail=f"Playlist '{playlist_path}' not found")
     return node
+
+
+@app.get("/api/settings")
+def get_settings():
+    path = settings_store.get_rekordbox_xml_path()
+    return {"rekordbox_xml_path": str(path), "exists": path.is_file()}
+
+
+@app.put("/api/settings")
+def update_settings(body: SettingsUpdate):
+    try:
+        settings_store.set_rekordbox_xml_path(body.rekordbox_xml_path)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return get_settings()
 
 
 @app.get("/api/playlists")

@@ -18,7 +18,7 @@ from typing import Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from set_builder import DEFAULT_SHAPE, BuildError, BuildResult, build_set  # noqa: E402
 
-from webapp import config
+from webapp import config, settings_store
 from webapp.models import to_builder_tracks
 from webapp.rekordbox_reader import flatten_playlists, parse_library
 from webapp.rekordbox_reader import playlist_tracks as rb_playlist_tracks
@@ -47,7 +47,7 @@ def run_build(
     needing a second lookup against tag_store. Raises BuildError on any
     validation problem (bad pins, unknown playlist, not enough phase-tagged
     candidates, etc.) - the caller (main.py) turns that into an HTTP 400."""
-    collection, root = parse_library(config.REKORDBOX_XML_PATH)
+    collection, root = parse_library(settings_store.get_rekordbox_xml_path())
     playlists = dict(flatten_playlists(root))
     node = playlists.get(playlist_path)
     if node is None:

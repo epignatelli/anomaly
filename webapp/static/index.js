@@ -4,6 +4,41 @@ function escapeHtml(s) {
   return div.innerHTML;
 }
 
+async function loadSettings() {
+  const input = document.getElementById("xml-path");
+  try {
+    const res = await fetch("/api/settings");
+    const data = await res.json();
+    input.value = data.rekordbox_xml_path;
+    if (!data.exists) {
+      document.getElementById("settings-status").innerHTML =
+        `<div class="note error">This path does not exist on disk.</div>`;
+    }
+  } catch (err) {
+    // Non-fatal - the input just stays blank if settings can't be loaded.
+  }
+}
+
+async function saveSettings() {
+  const input = document.getElementById("xml-path");
+  const status = document.getElementById("settings-status");
+  status.textContent = "Saving…";
+  try {
+    const res = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rekordbox_xml_path: input.value.trim() }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    status.innerHTML = `<div class="note">Saved. Reloading playlists…</div>`;
+    await loadPlaylists();
+    status.textContent = "";
+  } catch (err) {
+    status.innerHTML = `<div class="note error">${escapeHtml(err.message)}</div>`;
+  }
+}
+
 async function loadPlaylists() {
   const status = document.getElementById("status");
   const table = document.getElementById("playlist-table");
@@ -40,4 +75,6 @@ async function loadPlaylists() {
   });
 }
 
+document.getElementById("save-settings").addEventListener("click", saveSettings);
+loadSettings();
 loadPlaylists();

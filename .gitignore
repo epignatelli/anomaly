@@ -5,3 +5,4 @@ __pycache__/
 ._*
 venv/
 .venv/
+webapp/settings.json
