@@ -16,6 +16,12 @@ from webapp import config
 
 SETTINGS_PATH = Path(__file__).resolve().parent / "settings.json"
 
+# Where an uploaded (browser file-picker) XML gets saved. Browsers don't
+# expose the real filesystem path of a picked file for security reasons, so
+# "browse for a file" has to mean "upload its bytes", not "tell the server
+# where it is".
+UPLOADED_XML_PATH = Path(__file__).resolve().parent / "uploaded_rekordbox.xml"
+
 
 def _read() -> dict:
     if not SETTINGS_PATH.exists():
@@ -47,3 +53,11 @@ def set_rekordbox_xml_path(path: str) -> None:
     data = _read()
     data["rekordbox_xml_path"] = str(resolved)
     _write(data)
+
+
+def save_uploaded_xml(content: bytes) -> Path:
+    """Save a browser-uploaded XML's bytes to a fixed local path and make it
+    the active rekordbox_xml_path. Returns the saved path."""
+    UPLOADED_XML_PATH.write_bytes(content)
+    set_rekordbox_xml_path(str(UPLOADED_XML_PATH))
+    return UPLOADED_XML_PATH

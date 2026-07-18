@@ -6,3 +6,4 @@ __pycache__/
 venv/
 .venv/
 webapp/settings.json
+webapp/uploaded_rekordbox.xml

@@ -39,6 +39,24 @@ async function saveSettings() {
   }
 }
 
+async function uploadXmlFile(file) {
+  const status = document.getElementById("settings-status");
+  status.textContent = `Uploading ${file.name}…`;
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    const res = await fetch("/api/settings/upload", { method: "POST", body: formData });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    document.getElementById("xml-path").value = data.rekordbox_xml_path;
+    status.innerHTML = `<div class="note">Uploaded. Reloading playlists…</div>`;
+    await loadPlaylists();
+    status.textContent = "";
+  } catch (err) {
+    status.innerHTML = `<div class="note error">${escapeHtml(err.message)}</div>`;
+  }
+}
+
 async function loadPlaylists() {
   const status = document.getElementById("status");
   const table = document.getElementById("playlist-table");
@@ -75,6 +93,25 @@ async function loadPlaylists() {
   });
 }
 
+async function resync() {
+  // The server already re-reads the XML from disk on every request (no
+  // server-side caching to invalidate) - this just refreshes what's shown
+  // here, for after you've re-exported from Rekordbox.
+  const status = document.getElementById("settings-status");
+  status.textContent = "Re-syncing…";
+  await loadSettings();
+  await loadPlaylists();
+  status.innerHTML = `<div class="note">Re-synced.</div>`;
+  setTimeout(() => { status.innerHTML = ""; }, 2000);
+}
+
+document.getElementById("resync-btn").addEventListener("click", resync);
 document.getElementById("save-settings").addEventListener("click", saveSettings);
+document.getElementById("browse-btn").addEventListener("click", () => {
+  document.getElementById("xml-file").click();
+});
+document.getElementById("xml-file").addEventListener("change", (e) => {
+  if (e.target.files[0]) uploadXmlFile(e.target.files[0]);
+});
 loadSettings();
 loadPlaylists();

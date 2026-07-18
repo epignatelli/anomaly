@@ -15,11 +15,15 @@
     <h2>Rekordbox library</h2>
     <div class="form-grid">
       <div class="form-field" style="grid-column: span 2">
-        <label>Path to rekordbox.xml</label>
+        <label>Path to rekordbox.xml (on this machine, readable by the server)</label>
         <input type="text" id="xml-path" style="width:100%">
       </div>
     </div>
-    <button type="button" id="save-settings">Save</button>
+    <button type="button" id="save-settings">Save path</button>
+    <span style="color: var(--text-dim); margin: 0 8px">or</span>
+    <button type="button" id="browse-btn" class="secondary">Browse for file…</button>
+    <input type="file" id="xml-file" accept=".xml" style="display:none">
+    <button type="button" id="resync-btn" class="secondary" title="Re-read the XML from disk and refresh the playlist list - use this after re-exporting from Rekordbox">↻ Re-sync</button>
     <div id="settings-status"></div>
   </div>
 
