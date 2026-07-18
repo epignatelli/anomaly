@@ -119,6 +119,23 @@ class Track:
         return f"{self.artist} - {self.title}" if self.artist else self.title
 
 
+@dataclass
+class BuildResult:
+    """Everything build_set() computes, for a caller (CLI or, in future, a web
+    backend) to report/act on however it likes - build_set() itself never
+    prints or exits, it only returns data or raises BuildError."""
+
+    order: List[Track]
+    targets: List[float]
+    pins: Dict[int, Track]
+    key_energy_blend: float
+    bad_transitions: List[Tuple[int, int, Track, Track]]
+    missing_tags: List[Track]      # pool tracks missing Key and/or Energy
+    phase_untagged: List[Track]    # eligible tracks with no phase tag (phased builds only, else [])
+    not_selected: List[Track]      # eligible (and phase-tagged, if phased) tracks not chosen
+    shrink_warning: Optional[str]  # set if the pool didn't have enough candidates to hit the requested n
+
+
 # ------------------------------
 # Parsing
 # ------------------------------
@@ -244,7 +261,7 @@ def parse_pins(
     used_ids: Dict[int, int] = {}  # track.idx -> position
     for spec in pin_args:
         if "=" not in spec:
-            raise SystemExit(f"Invalid --pin '{spec}', expected TITLE_SUBSTRING=POSITION")
+            raise BuildError(f"Invalid --pin '{spec}', expected TITLE_SUBSTRING=POSITION")
         needle, pos_str = spec.rsplit("=", 1)
         needle = needle.strip()
         pos_str = pos_str.strip().lower()
@@ -256,26 +273,26 @@ def parse_pins(
             try:
                 pos = int(pos_str)
             except ValueError:
-                raise SystemExit(f"Invalid position '{pos_str}' in --pin '{spec}'")
+                raise BuildError(f"Invalid position '{pos_str}' in --pin '{spec}'")
         if not (1 <= pos <= n):
-            raise SystemExit(f"--pin position {pos} out of range 1..{n}")
+            raise BuildError(f"--pin position {pos} out of range 1..{n}")
 
         matches = [t for t in pool if needle.lower() in t.label.lower()]
         if not matches:
-            raise SystemExit(f"--pin '{needle}' matched no track in the input file")
+            raise BuildError(f"--pin '{needle}' matched no track in the input file")
         if len(matches) > 1:
             listing = "\n".join(f"  - {t.label}" for t in matches[:10])
-            raise SystemExit(f"--pin '{needle}' matched {len(matches)} tracks, be more specific:\n{listing}")
+            raise BuildError(f"--pin '{needle}' matched {len(matches)} tracks, be more specific:\n{listing}")
         track = matches[0]
         if track.idx not in eligible_ids:
-            raise SystemExit(
+            raise BuildError(
                 f"--pin '{needle}' matched '{track.label}' but it has no parseable "
                 f"Key and/or 'Energy N' comment, so it can't be placed."
             )
         if pos in pins:
-            raise SystemExit(f"Position {pos} pinned more than once")
+            raise BuildError(f"Position {pos} pinned more than once")
         if track.idx in used_ids:
-            raise SystemExit(
+            raise BuildError(
                 f"'{track.label}' pinned to both position {used_ids[track.idx]} and {pos}"
             )
         pins[pos] = track
@@ -707,6 +724,111 @@ def write_rekordbox_xml(
 
 
 # ------------------------------
+# Reusable pipeline: same function for the CLI and (in future) a web backend
+# ------------------------------
+def build_set(
+    pool: List[Track],
+    *,
+    num_tracks: Optional[int] = None,
+    target_minutes: Optional[float] = None,
+    pins_spec: List[str] = [],
+    shape: str = DEFAULT_SHAPE,
+    key_strict: bool = False,
+    key_weight: float = 1.0,
+    key_energy_blend: float = 0.5,
+    iterations: int = 20000,
+    phase_groups: Optional[Dict[int, str]] = None,
+    phase_segments: Optional[List[float]] = None,
+) -> BuildResult:
+    """Run the full set-building pipeline. Raises BuildError on any
+    user-facing validation problem (bad pins, no eligible tracks, not enough
+    phase-tagged candidates for a segment, etc.) - never prints, never exits,
+    so it's safe to call from a long-running process (a future web backend)
+    as well as the CLI below."""
+    eligible = [t for t in pool if t.key is not None and t.energy is not None]
+    missing_tags = [t for t in pool if t.key is None or t.energy is None]
+
+    if not eligible:
+        raise BuildError("No tracks with both a parseable Key and an 'Energy N' comment were found in the input.")
+
+    if num_tracks is not None:
+        n = num_tracks
+    elif target_minutes is not None:
+        durations = [t.duration_s for t in eligible if t.duration_s]
+        avg = (sum(durations) / len(durations)) if durations else 240
+        n = max(1, round(target_minutes * 60 / avg))
+    else:
+        n = len(eligible)
+    n = max(1, min(n, len(eligible)))
+
+    eligible_ids = {t.idx for t in eligible}
+    pins = parse_pins(pins_spec, pool, eligible_ids, n)
+
+    shape_points = parse_shape(shape)
+    targets = target_energy_curve(shape_points, n)
+
+    pinned_positions = set(pins.keys())
+    pinned_ids = {t.idx for t in pins.values()}
+    free_positions = [p for p in range(1, n + 1) if p not in pinned_positions]
+    candidates = [t for t in eligible if t.idx not in pinned_ids]
+
+    shrink_warning = None
+    if len(candidates) < len(free_positions):
+        new_n = len(pins) + len(candidates)
+        shrink_warning = (
+            f"only {len(candidates)} eligible unpinned track(s) available for "
+            f"{len(free_positions)} open slot(s); shrinking the set to {new_n} tracks."
+        )
+        n = new_n
+        targets = target_energy_curve(shape_points, n)
+        free_positions = [p for p in free_positions if p <= n]
+
+    phase_untagged: List[Track] = []
+    segment_of_position: Optional[Dict[int, str]] = None
+    if phase_groups is not None:
+        phase_untagged = [t for t in candidates if t.idx not in phase_groups]
+        candidates = [t for t in candidates if t.idx in phase_groups]
+        segments = phase_segments if phase_segments is not None else DEFAULT_PHASE_SHAPE
+        segment_ranges = phase_segment_ranges(n, segments)
+        segment_of_position = {p: phase for phase, rng in segment_ranges.items() for p in rng}
+        placement = select_and_place_phased(candidates, free_positions, targets, phase_groups, segment_ranges)
+    else:
+        placement = select_and_place(candidates, free_positions, targets)
+
+    order_by_pos: Dict[int, Track] = {}
+    order_by_pos.update(pins)
+    order_by_pos.update(placement)
+    order = [order_by_pos[p] for p in range(1, n + 1)]
+
+    order, _ = local_search(
+        order, pinned_positions, targets, key_weight, key_strict,
+        iterations, key_energy_blend, segment_of_position,
+    )
+
+    bad_transitions = []
+    for i in range(len(order) - 1):
+        cat, _ = transition_penalty(order[i].key, order[i + 1].key)
+        if cat == "other":
+            bad_transitions.append((i + 1, i + 2, order[i], order[i + 1]))
+
+    phase_untagged_ids = {t.idx for t in phase_untagged}
+    selected_ids = {t.idx for t in order}
+    not_selected = [t for t in eligible if t.idx not in selected_ids and t.idx not in phase_untagged_ids]
+
+    return BuildResult(
+        order=order,
+        targets=targets,
+        pins=pins,
+        key_energy_blend=key_energy_blend,
+        bad_transitions=bad_transitions,
+        missing_tags=missing_tags,
+        phase_untagged=phase_untagged,
+        not_selected=not_selected,
+        shrink_warning=shrink_warning,
+    )
+
+
+# ------------------------------
 # main
 # ------------------------------
 def main() -> None:
@@ -735,114 +857,77 @@ def main() -> None:
     args = ap.parse_args()
 
     pool = load_pool(args.tsv)
-    eligible = [t for t in pool if t.key is not None and t.energy is not None]
-    excluded = [t for t in pool if t.key is None or t.energy is None]
 
-    if not eligible:
-        raise SystemExit("No tracks with both a parseable Key and an 'Energy N' comment were found in the input.")
-
-    if excluded:
-        print(f"NOTE: {len(excluded)} track(s) skipped (missing Key and/or 'Energy N' comment):")
-        for t in excluded[:20]:
+    # Printed up front, before any validation that might abort the build, to
+    # match the original (pre-build_set()) behavior where this NOTE appeared
+    # even when a later step (e.g. a bad --pin) caused a hard error.
+    missing_tags = [t for t in pool if t.key is None or t.energy is None]
+    if missing_tags:
+        print(f"NOTE: {len(missing_tags)} track(s) skipped (missing Key and/or 'Energy N' comment):")
+        for t in missing_tags[:20]:
             print(f"  - {t.label}")
-        if len(excluded) > 20:
-            print(f"  ... and {len(excluded) - 20} more")
+        if len(missing_tags) > 20:
+            print(f"  ... and {len(missing_tags) - 20} more")
 
-    if args.num_tracks is not None:
-        n = args.num_tracks
-    elif args.target_minutes is not None:
-        durations = [t.duration_s for t in eligible if t.duration_s]
-        avg = (sum(durations) / len(durations)) if durations else 240
-        n = max(1, round(args.target_minutes * 60 / avg))
-    else:
-        n = len(eligible)
-    n = max(1, min(n, len(eligible)))
+    phase_groups: Optional[Dict[int, str]] = None
+    phase_segments: Optional[List[float]] = None
+    if args.phase_tags:
+        eligible_ids = {t.idx for t in pool if t.key is not None and t.energy is not None}
+        try:
+            phase_groups = parse_phase_tags(args.phase_tags, pool, eligible_ids)
+        except BuildError as e:
+            raise SystemExit(str(e))
+        if args.phase_shape:
+            phase_segments = [float(x) for x in args.phase_shape.split(",")]
 
-    eligible_ids = {t.idx for t in eligible}
-    pins = parse_pins(args.pin, pool, eligible_ids, n)
-
-    shape_points = parse_shape(args.shape)
-    targets = target_energy_curve(shape_points, n)
-
-    pinned_positions = set(pins.keys())
-    pinned_ids = {t.idx for t in pins.values()}
-    free_positions = [p for p in range(1, n + 1) if p not in pinned_positions]
-    candidates = [t for t in eligible if t.idx not in pinned_ids]
-
-    if len(candidates) < len(free_positions):
-        new_n = len(pins) + len(candidates)
-        print(
-            f"WARNING: only {len(candidates)} eligible unpinned track(s) available for "
-            f"{len(free_positions)} open slot(s); shrinking the set to {new_n} tracks."
-        )
-        n = new_n
-        targets = target_energy_curve(shape_points, n)
-        free_positions = [p for p in free_positions if p <= n]
-
-    phase_untagged: List[Track] = []
-    segment_of_position: Optional[Dict[int, str]] = None
     try:
-        if args.phase_tags:
-            phase_of = parse_phase_tags(args.phase_tags, pool, eligible_ids)
-            phase_untagged = [t for t in candidates if t.idx not in phase_of]
-            if phase_untagged:
-                print(f"NOTE: {len(phase_untagged)} eligible track(s) have no phase tag and are excluded from this phased build:")
-                for t in phase_untagged[:20]:
-                    print(f"  - {t.label}")
-                if len(phase_untagged) > 20:
-                    print(f"  ... and {len(phase_untagged) - 20} more")
-            candidates = [t for t in candidates if t.idx in phase_of]
-
-            phase_shape = (
-                [float(x) for x in args.phase_shape.split(",")] if args.phase_shape else DEFAULT_PHASE_SHAPE
-            )
-            segment_ranges = phase_segment_ranges(n, phase_shape)
-            segment_of_position = {p: phase for phase, rng in segment_ranges.items() for p in rng}
-            placement = select_and_place_phased(candidates, free_positions, targets, phase_of, segment_ranges)
-        else:
-            placement = select_and_place(candidates, free_positions, targets)
+        result = build_set(
+            pool,
+            num_tracks=args.num_tracks,
+            target_minutes=args.target_minutes,
+            pins_spec=args.pin,
+            shape=args.shape,
+            key_strict=args.key_strict,
+            key_weight=args.key_weight,
+            key_energy_blend=args.key_energy_blend,
+            iterations=args.iterations,
+            phase_groups=phase_groups,
+            phase_segments=phase_segments,
+        )
     except BuildError as e:
         raise SystemExit(str(e))
 
-    order_by_pos: Dict[int, Track] = {}
-    order_by_pos.update(pins)
-    order_by_pos.update(placement)
-    order = [order_by_pos[p] for p in range(1, n + 1)]
+    if result.phase_untagged:
+        print(f"NOTE: {len(result.phase_untagged)} eligible track(s) have no phase tag and are excluded from this phased build:")
+        for t in result.phase_untagged[:20]:
+            print(f"  - {t.label}")
+        if len(result.phase_untagged) > 20:
+            print(f"  ... and {len(result.phase_untagged) - 20} more")
 
-    order, _ = local_search(
-        order, pinned_positions, targets, args.key_weight, args.key_strict,
-        args.iterations, args.key_energy_blend, segment_of_position,
-    )
+    if result.shrink_warning:
+        print(f"WARNING: {result.shrink_warning}")
 
-    bad_transitions = []
-    for i in range(len(order) - 1):
-        cat, _ = transition_penalty(order[i].key, order[i + 1].key)
-        if cat == "other":
-            bad_transitions.append((i + 1, i + 2, order[i], order[i + 1]))
-
-    if args.key_strict and bad_transitions:
+    if args.key_strict and result.bad_transitions:
         print("\nCould not find a fully in-key ordering. Off-key transitions remain:")
-        for i, j, a, b in bad_transitions:
+        for i, j, a, b in result.bad_transitions:
             print(f"  #{i} {a.label} ({fmt_key(a.key)}) -> #{j} {b.label} ({fmt_key(b.key)})")
         raise SystemExit(2)
 
-    print_result(order, targets, pins, args.key_energy_blend)
-    if bad_transitions and not args.key_strict:
-        print(f"\n{len(bad_transitions)} off-key transition(s) remain (soft mode). Use --key-strict to forbid them, or --key-weight to penalize them harder.")
+    print_result(result.order, result.targets, result.pins, result.key_energy_blend)
+    if result.bad_transitions and not args.key_strict:
+        print(f"\n{len(result.bad_transitions)} off-key transition(s) remain (soft mode). Use --key-strict to forbid them, or --key-weight to penalize them harder.")
 
     if args.out_csv:
-        write_csv(order, targets, pins, args.key_energy_blend, args.out_csv)
+        write_csv(result.order, result.targets, result.pins, result.key_energy_blend, args.out_csv)
         print(f"\nWrote {args.out_csv}")
 
     if args.excluded_report:
-        selected_ids = {t.idx for t in order}
-        not_selected = [t for t in eligible if t.idx not in selected_ids and t not in phase_untagged]
-        all_untagged = excluded + phase_untagged
-        write_excluded_report(not_selected, all_untagged, args.excluded_report)
-        print(f"\nWrote {args.excluded_report} ({len(not_selected)} not selected, {len(all_untagged)} untagged)")
+        all_untagged = result.missing_tags + result.phase_untagged
+        write_excluded_report(result.not_selected, all_untagged, args.excluded_report)
+        print(f"\nWrote {args.excluded_report} ({len(result.not_selected)} not selected, {len(all_untagged)} untagged)")
 
     if args.plot_out or args.show:
-        plot_result(order, targets, args.key_energy_blend, args.plot_out, args.show)
+        plot_result(result.order, result.targets, result.key_energy_blend, args.plot_out, args.show)
         if args.plot_out:
             print(f"Wrote {args.plot_out}")
 
@@ -850,22 +935,22 @@ def main() -> None:
         script_dir = Path(__file__).resolve().parent
         base_dir = (script_dir / args.library_base_dir).resolve()
         meta_dir = base_dir / ".meta"
-        resolved = resolve_track_paths(order, base_dir, meta_dir)
+        resolved = resolve_track_paths(result.order, base_dir, meta_dir)
 
         if args.rekordbox_xml:
             playlist_name = args.playlist_name or f"{Path(args.tsv).stem} {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-            skipped = write_rekordbox_xml(order, resolved, playlist_name, args.rekordbox_xml)
-            found = len(order) - len(skipped)
-            print(f"\nWrote {args.rekordbox_xml} ({found}/{len(order)} tracks resolved to real files)")
+            skipped = write_rekordbox_xml(result.order, resolved, playlist_name, args.rekordbox_xml)
+            found = len(result.order) - len(skipped)
+            print(f"\nWrote {args.rekordbox_xml} ({found}/{len(result.order)} tracks resolved to real files)")
             if skipped:
                 print(f"Could not find a file on disk for {len(skipped)} track(s), left out of the XML:")
                 for t in skipped:
                     print(f"  - {t.label}")
 
         if args.playlist_folder:
-            skipped = write_playlist_folder(order, resolved, args.playlist_folder)
-            found = len(order) - len(skipped)
-            print(f"\nWrote {args.playlist_folder} ({found}/{len(order)} tracks) - select all in Finder and drag into a new empty Rekordbox playlist")
+            skipped = write_playlist_folder(result.order, resolved, args.playlist_folder)
+            found = len(result.order) - len(skipped)
+            print(f"\nWrote {args.playlist_folder} ({found}/{len(result.order)} tracks) - select all in Finder and drag into a new empty Rekordbox playlist")
             if skipped:
                 print(f"Could not find a file on disk for {len(skipped)} track(s), left out of the folder:")
                 for t in skipped:
