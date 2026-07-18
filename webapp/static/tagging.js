@@ -56,6 +56,37 @@ function rowHtml(track, position) {
     </tr>`;
 }
 
+function overviewCardHtml(track) {
+  const title = escapeHtml(track.title || "");
+  const artist = track.artist ? escapeHtml(track.artist) : "";
+  return `
+    <div class="card">
+      <div class="title">${title}</div>
+      ${artist ? `<div class="artist">${artist}</div>` : ""}
+      <div class="meta">
+        <span>${track.key || "?"}</span>
+        <span>En ${track.energy != null ? track.energy : "?"}</span>
+        <span>${track.bpm ? Math.round(track.bpm) : "?"} bpm</span>
+      </div>
+    </div>`;
+}
+
+function renderOverview(tracks) {
+  document.getElementById("overview-section").style.display = "";
+
+  const unassigned = tracks.filter((t) => !(t.phases || []).length);
+  document.getElementById("overview-unassigned").innerHTML = unassigned.map(overviewCardHtml).join("");
+
+  const board = document.getElementById("overview-board");
+  board.innerHTML = PHASES.map((p) => `<div class="column" data-phase="${p}"><h3>${PHASE_LABELS[p]} <span data-count="${p}"></span></h3><div class="cards"></div></div>`).join("");
+
+  for (const phase of PHASES) {
+    const inPhase = tracks.filter((t) => (t.phases || []).includes(phase));
+    board.querySelector(`.column[data-phase="${phase}"] .cards`).innerHTML = inPhase.map(overviewCardHtml).join("");
+    board.querySelector(`.column[data-phase="${phase}"] [data-count="${phase}"]`).textContent = `(${inPhase.length})`;
+  }
+}
+
 async function loadTagging() {
   const playlistPath = getPlaylistPath();
   const status = document.getElementById("status");
@@ -85,6 +116,7 @@ async function loadTagging() {
   const body = document.getElementById("tracks-body");
   table.style.display = "";
   body.innerHTML = tracks.map((t, i) => rowHtml(t, i + 1)).join("");
+  renderOverview(tracks);
 
   body.addEventListener("click", async (e) => {
     const pill = e.target.closest(".pill");
@@ -105,6 +137,7 @@ async function loadTagging() {
         track.phases.push(phase);
         pill.classList.add("active");
       }
+      renderOverview(tracks);
     } catch (err) {
       status.innerHTML = `<div class="note error">Could not update tag: ${escapeHtml(err.message)}</div>`;
     } finally {
