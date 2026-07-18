@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -124,7 +126,7 @@ def set_track_tag(
 @app.post("/api/build")
 def build(req: BuildRequest):
     try:
-        build_id, result = build_service.run_build(
+        build_id, result, phase_groups = build_service.run_build(
             req.playlist_path,
             num_tracks=req.num_tracks,
             target_minutes=req.target_minutes,
@@ -160,6 +162,7 @@ def build(req: BuildRequest):
                 "duration_s": t.duration_s,
                 "transition_from_prev": trans,
                 "pinned": (i + 1) in result.pins,
+                "phase": phase_groups.get(t.idx) if phase_groups else None,
             }
         )
 
@@ -202,3 +205,13 @@ def export_build(build_id: str, req: ExportRequest):
         "total": len(result.order),
         "skipped": [t.label for t in skipped],
     }
+
+
+@app.get("/")
+def root():
+    return RedirectResponse(url="/index.html")
+
+
+# Mounted last so it never shadows the /api/... routes above - StaticFiles
+# only handles requests nothing earlier matched.
+app.mount("/", StaticFiles(directory=Path(__file__).resolve().parent / "static"), name="static")

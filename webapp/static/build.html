@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>anomaly — build</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>anomaly</h1>
+  <span class="breadcrumb"><a href="/index.html">playlists</a> / <a href="#" id="tagging-link"></a> / build</span>
+</header>
+<main>
+  <form id="build-form">
+    <div class="section">
+      <h2>Set size</h2>
+      <div class="form-grid">
+        <div class="form-field">
+          <label>Number of tracks (leave blank to use target minutes)</label>
+          <input type="number" id="num-tracks" min="1">
+        </div>
+        <div class="form-field">
+          <label>Target minutes (used only if number of tracks is blank)</label>
+          <input type="number" id="target-minutes" min="1" step="0.5">
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Pins</h2>
+      <div id="pins-container"></div>
+      <button type="button" class="secondary" id="add-pin">+ Add pin</button>
+    </div>
+
+    <div class="section">
+      <h2>Energy shape</h2>
+      <div class="form-grid">
+        <div class="form-field" style="grid-column: span 2">
+          <label>Control points (pos:energy,... over [0,1] on a 0-10 scale)</label>
+          <input type="text" id="shape" style="width: 100%">
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Phase groups</h2>
+      <div class="form-field">
+        <label><input type="checkbox" id="use-phase-tags"> Constrain each segment to its tagged phase group</label>
+      </div>
+      <div class="form-grid" id="phase-shape-fields" style="display:none">
+        <div class="form-field"><label>Opening</label><input type="number" step="0.05" id="ps-opening" value="0.2"></div>
+        <div class="form-field"><label>First Boost</label><input type="number" step="0.05" id="ps-first-boost" value="0.2"></div>
+        <div class="form-field"><label>Plateau</label><input type="number" step="0.05" id="ps-plateau" value="0.2"></div>
+        <div class="form-field"><label>Second Boost</label><input type="number" step="0.05" id="ps-second-boost" value="0.2"></div>
+        <div class="form-field"><label>Closing</label><input type="number" step="0.05" id="ps-closing" value="0.2"></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Key mixing</h2>
+      <div class="form-grid">
+        <div class="form-field"><label><input type="checkbox" id="key-strict"> Never allow an off-key transition</label></div>
+        <div class="form-field"><label>Key weight</label><input type="number" step="0.1" id="key-weight" value="1.0"></div>
+        <div class="form-field"><label>Key-energy blend (0-1)</label><input type="number" step="0.1" min="0" max="1" id="key-energy-blend" value="0.5"></div>
+        <div class="form-field"><label>Iterations</label><input type="number" id="iterations" value="20000"></div>
+      </div>
+    </div>
+
+    <button type="submit">Build Set</button>
+  </form>
+
+  <div id="status"></div>
+  <div id="results" style="display:none">
+    <div class="section">
+      <h2>Result</h2>
+      <div id="summary"></div>
+      <table>
+        <thead>
+          <tr><th>#</th><th>Track</th><th>Phase</th><th>Key</th><th>En</th><th>Achv</th><th>Tgt</th><th>BPM</th><th>Time</th><th>Transition</th></tr>
+        </thead>
+        <tbody id="results-body"></tbody>
+      </table>
+    </div>
+
+    <div class="section" id="export-section">
+      <h2>Export</h2>
+      <div class="form-grid">
+        <div class="form-field">
+          <label>Format</label>
+          <select id="export-kind">
+            <option value="playlist_folder">Playlist folder (symlinks, drag into Rekordbox)</option>
+            <option value="rekordbox_xml">Rekordbox XML (File &gt; Library &gt; Import Library)</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label>Output path</label>
+          <input type="text" id="export-path" style="width:100%">
+        </div>
+        <div class="form-field" id="playlist-name-field">
+          <label>Playlist name (rekordbox_xml only)</label>
+          <input type="text" id="export-playlist-name" style="width:100%">
+        </div>
+      </div>
+      <button type="button" id="export-btn">Export</button>
+      <div id="export-status"></div>
+    </div>
+  </div>
+</main>
+<script src="/build.js"></script>
+</body>
+</html>

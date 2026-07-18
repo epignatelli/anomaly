@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>anomaly — tagging</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>anomaly</h1>
+  <span class="breadcrumb"><a href="/index.html">playlists</a> / <span id="playlist-name"></span></span>
+  <span style="flex:1"></span>
+  <button id="build-btn" class="secondary">Build Set →</button>
+</header>
+<main>
+  <div id="status"></div>
+
+  <div class="unassigned-tray">
+    <h3>Unassigned</h3>
+    <div class="cards" id="unassigned-cards"></div>
+  </div>
+
+  <div class="board" id="board"></div>
+</main>
+<script src="/tagging.js"></script>
+</body>
+</html>

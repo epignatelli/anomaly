@@ -40,11 +40,13 @@ def run_build(
     key_weight: float = 1.0,
     key_energy_blend: float = 0.5,
     iterations: int = 20000,
-) -> tuple[str, BuildResult]:
-    """Runs build_set() for a Rekordbox playlist, returns (build_id, result).
-    Raises BuildError on any validation problem (bad pins, unknown playlist,
-    not enough phase-tagged candidates, etc.) - the caller (main.py) turns
-    that into an HTTP 400."""
+) -> tuple[str, BuildResult, Optional[Dict[int, str]]]:
+    """Runs build_set() for a Rekordbox playlist, returns (build_id, result,
+    phase_groups) - phase_groups (idx -> phase name) is returned alongside so
+    the caller can annotate each row of the response with its phase, without
+    needing a second lookup against tag_store. Raises BuildError on any
+    validation problem (bad pins, unknown playlist, not enough phase-tagged
+    candidates, etc.) - the caller (main.py) turns that into an HTTP 400."""
     collection, root = parse_library(config.REKORDBOX_XML_PATH)
     playlists = dict(flatten_playlists(root))
     node = playlists.get(playlist_path)
@@ -79,7 +81,7 @@ def run_build(
 
     build_id = str(uuid.uuid4())
     _cache[build_id] = result
-    return build_id, result
+    return build_id, result, phase_groups
 
 
 def get_cached(build_id: str) -> BuildResult:
