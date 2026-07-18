@@ -22,7 +22,7 @@ from webapp import config, settings_store
 from webapp.models import to_builder_tracks
 from webapp.rekordbox_reader import flatten_playlists, parse_library
 from webapp.rekordbox_reader import playlist_tracks as rb_playlist_tracks
-from webapp.tag_store import get_tags
+from webapp.tag_store import get_constraints, get_tags
 
 _cache: Dict[str, BuildResult] = {}
 
@@ -56,15 +56,20 @@ def run_build(
 
     rb_tracks = rb_playlist_tracks(node, collection)
     tracks, idx_to_track_id = to_builder_tracks(rb_tracks)
+    track_ids = [t.track_id for t in rb_tracks]
 
     phase_groups = None
     if use_phase_tags:
-        tag_map = get_tags(config.TAGS_DB_PATH, playlist_path, [t.track_id for t in rb_tracks])
+        tag_map = get_tags(config.TAGS_DB_PATH, playlist_path, track_ids)
         phase_groups = {
             idx: set(tag_map[tid])
             for idx, tid in idx_to_track_id.items()
             if tag_map.get(tid)
         }
+
+    constraint_map = get_constraints(config.TAGS_DB_PATH, playlist_path, track_ids)
+    ignored_ids = {idx for idx, tid in idx_to_track_id.items() if constraint_map.get(tid) == "ignore"}
+    required_ids = {idx for idx, tid in idx_to_track_id.items() if constraint_map.get(tid) == "include"}
 
     result = build_set(
         tracks,
@@ -78,6 +83,8 @@ def run_build(
         iterations=iterations,
         phase_groups=phase_groups,
         phase_segments=phase_shape,
+        ignored_ids=ignored_ids,
+        required_ids=required_ids,
     )
 
     build_id = str(uuid.uuid4())

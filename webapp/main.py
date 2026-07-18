@@ -235,7 +235,7 @@ def build(req: BuildRequest):
             {"from_position": i, "to_position": j, "from_title": a.label, "to_title": b.label}
             for i, j, a, b in result.bad_transitions
         ],
-        "excluded": [t.label for t in result.missing_tags + result.phase_untagged],
+        "excluded": [t.label for t in result.missing_tags + result.ignored + result.phase_untagged],
         "not_selected": [t.label for t in result.not_selected],
         "shrink_warning": result.shrink_warning,
     }

@@ -131,6 +131,7 @@ class BuildResult:
     key_energy_blend: float
     bad_transitions: List[Tuple[int, int, Track, Track]]
     missing_tags: List[Track]      # pool tracks missing Key and/or Energy
+    ignored: List[Track]           # pool tracks explicitly marked "ignore" (excluded regardless of everything else)
     phase_untagged: List[Track]    # eligible tracks with no phase tag (phased builds only, else [])
     not_selected: List[Track]      # eligible (and phase-tagged, if phased) tracks not chosen
     shrink_warning: Optional[str]  # set if the pool didn't have enough candidates to hit the requested n
@@ -301,11 +302,44 @@ def parse_pins(
     return pins
 
 
+def resolve_track_refs(specs: List[str], pool: List[Track], eligible_ids: set, label: str) -> Set[int]:
+    """Resolve a list of title-substring specs (--ignore/--require) to a set
+    of track idx, via the same fuzzy substring match parse_pins() uses."""
+    ids: Set[int] = set()
+    for needle in specs:
+        matches = [t for t in pool if needle.lower() in t.label.lower()]
+        if not matches:
+            raise BuildError(f"--{label} '{needle}' matched no track in the input file")
+        if len(matches) > 1:
+            listing = "\n".join(f"  - {t.label}" for t in matches[:10])
+            raise BuildError(f"--{label} '{needle}' matched {len(matches)} tracks, be more specific:\n{listing}")
+        track = matches[0]
+        if track.idx not in eligible_ids and label != "ignore":
+            raise BuildError(
+                f"--{label} '{needle}' matched '{track.label}' but it has no parseable "
+                f"Key and/or 'Energy N' comment, so it can't be placed."
+            )
+        ids.add(track.idx)
+    return ids
+
+
 # ------------------------------
 # Selection + placement (energy-fit assignment)
 # ------------------------------
+# Subtracted from a candidate's cost wherever it's marked "must include", so
+# the Hungarian assignment strongly prefers seating it somewhere over any
+# optional candidate - large enough to dominate any realistic energy-fit or
+# phase-mismatch cost difference, but still a finite number so the solver
+# stays numerically well-behaved (an actual math.inf can produce degenerate
+# assignments if it appears in more than one cell of a row/column).
+REQUIRED_BONUS = 1e7
+
+
 def select_and_place(
-    candidates: List[Track], free_positions: List[int], targets: List[float]
+    candidates: List[Track],
+    free_positions: List[int],
+    targets: List[float],
+    required_ids: Optional[Set[int]] = None,
 ) -> Dict[int, Track]:
     # Intrinsic-tag-only cost: there's no adjacency/order yet at this stage,
     # so the key-driven cumulative curve (achieved_energy_curve) doesn't apply
@@ -317,7 +351,8 @@ def select_and_place(
     for i, pos in enumerate(free_positions):
         t_target = targets[pos - 1]
         for j, track in enumerate(candidates):
-            cost[i, j] = abs(track.energy - t_target)
+            base = abs(track.energy - t_target)
+            cost[i, j] = base - REQUIRED_BONUS if required_ids and track.idx in required_ids else base
     row_ind, col_ind = linear_sum_assignment(cost)
     return {free_positions[r]: candidates[c] for r, c in zip(row_ind, col_ind)}
 
@@ -388,6 +423,7 @@ def select_and_place_phased(
     targets: List[float],
     phase_of: Dict[int, Set[str]],
     segment_ranges: Dict[str, range],
+    required_ids: Optional[Set[int]] = None,
 ) -> Dict[int, Track]:
     """One Hungarian assignment over all free positions x all candidates,
     with a large penalty for any (position, candidate) pair where the
@@ -398,7 +434,14 @@ def select_and_place_phased(
     it's a single assignment problem, a multi-tagged track can still only
     end up in exactly one position overall - whichever of its eligible
     segments benefits the fit most - instead of risking being selected by
-    two segments' assignments independently."""
+    two segments' assignments independently.
+
+    A "must include" track (in required_ids) gets REQUIRED_BONUS subtracted
+    from its cost in every cell, same as select_and_place() - strong enough
+    to outweigh even a phase mismatch, so "must include" wins over phase
+    tagging in the rare case they conflict (matching how a --pin already
+    bypasses phase tagging entirely: an explicit placement instruction is a
+    stronger signal than a phase preference)."""
     if not candidates or not free_positions:
         return {}
     if len(candidates) < len(free_positions):
@@ -410,14 +453,15 @@ def select_and_place_phased(
     MISMATCH_PENALTY = 1e6
 
     cost = np.empty((len(free_positions), len(candidates)))
+    mismatch = np.zeros((len(free_positions), len(candidates)), dtype=bool)
     for i, pos in enumerate(free_positions):
         t_target = targets[pos - 1]
         pos_phase = position_phase[pos]
         for j, track in enumerate(candidates):
-            if pos_phase in phase_of.get(track.idx, ()):
-                cost[i, j] = abs(track.energy - t_target)
-            else:
-                cost[i, j] = MISMATCH_PENALTY
+            is_match = pos_phase in phase_of.get(track.idx, ())
+            mismatch[i, j] = not is_match
+            base = abs(track.energy - t_target) if is_match else MISMATCH_PENALTY
+            cost[i, j] = base - REQUIRED_BONUS if required_ids and track.idx in required_ids else base
 
     row_ind, col_ind = linear_sum_assignment(cost)
 
@@ -425,11 +469,15 @@ def select_and_place_phased(
     unresolved: Dict[str, int] = {}
     for r, c in zip(row_ind, col_ind):
         pos = free_positions[r]
-        if cost[r, c] >= MISMATCH_PENALTY:
+        track = candidates[c]
+        is_required = required_ids and track.idx in required_ids
+        if mismatch[r, c] and not is_required:
             phase = position_phase[pos]
             unresolved[phase] = unresolved.get(phase, 0) + 1
         else:
-            placement[pos] = candidates[c]
+            # Placed even if mismatched, when only "must include" forced it
+            # into a phase-incompatible slot - see docstring.
+            placement[pos] = track
 
     if unresolved:
         detail = ", ".join(f"{count} '{phase}' position(s)" for phase, count in unresolved.items())
@@ -786,14 +834,26 @@ def build_set(
     iterations: int = 20000,
     phase_groups: Optional[Dict[int, Set[str]]] = None,
     phase_segments: Optional[List[float]] = None,
+    ignored_ids: Optional[Set[int]] = None,
+    required_ids: Optional[Set[int]] = None,
 ) -> BuildResult:
     """Run the full set-building pipeline. Raises BuildError on any
     user-facing validation problem (bad pins, no eligible tracks, not enough
     phase-tagged candidates for a segment, etc.) - never prints, never exits,
     so it's safe to call from a long-running process (a future web backend)
-    as well as the CLI below."""
-    eligible = [t for t in pool if t.key is not None and t.energy is not None]
-    missing_tags = [t for t in pool if t.key is None or t.energy is None]
+    as well as the CLI below.
+
+    ignored_ids: tracks excluded entirely, regardless of anything else (same
+    tier as missing Key/Energy - they're just never candidates).
+    required_ids: tracks that must appear somewhere in the final order. Like
+    a --pin, this bypasses phase-tag matching if needed (an explicit "must
+    include" is a stronger signal than a phase preference) - unlike a pin, it
+    doesn't fix a specific position, the assignment still picks the best fit.
+    A track in both sets is simply ignored - exclusion wins over inclusion."""
+    ignored_ids = ignored_ids or set()
+    eligible = [t for t in pool if t.key is not None and t.energy is not None and t.idx not in ignored_ids]
+    missing_tags = [t for t in pool if (t.key is None or t.energy is None) and t.idx not in ignored_ids]
+    ignored = [t for t in pool if t.idx in ignored_ids]
 
     if not eligible:
         raise BuildError("No tracks with both a parseable Key and an 'Energy N' comment were found in the input.")
@@ -830,17 +890,30 @@ def build_set(
         targets = target_energy_curve(shape_points, n)
         free_positions = [p for p in free_positions if p <= n]
 
+    if required_ids:
+        required_count = sum(1 for t in candidates if t.idx in required_ids)
+        if required_count > len(free_positions):
+            raise BuildError(
+                f"{required_count} track(s) marked 'must include' but only "
+                f"{len(free_positions)} position(s) available."
+            )
+
     phase_untagged: List[Track] = []
     segment_of_position: Optional[Dict[int, str]] = None
     if phase_groups is not None:
-        phase_untagged = [t for t in candidates if t.idx not in phase_groups]
-        candidates = [t for t in candidates if t.idx in phase_groups]
+        required_ids = required_ids or set()
+        # A required-but-phase-untagged track stays in candidates (not
+        # phase_untagged) so select_and_place_phased still gets a chance to
+        # force it in via REQUIRED_BONUS, despite it mismatching every
+        # position's phase - see that function's docstring.
+        phase_untagged = [t for t in candidates if t.idx not in phase_groups and t.idx not in required_ids]
+        candidates = [t for t in candidates if t.idx in phase_groups or t.idx in required_ids]
         segments = phase_segments if phase_segments is not None else DEFAULT_PHASE_SHAPE
         segment_ranges = phase_segment_ranges(n, segments)
         segment_of_position = {p: phase for phase, rng in segment_ranges.items() for p in rng}
-        placement = select_and_place_phased(candidates, free_positions, targets, phase_groups, segment_ranges)
+        placement = select_and_place_phased(candidates, free_positions, targets, phase_groups, segment_ranges, required_ids)
     else:
-        placement = select_and_place(candidates, free_positions, targets)
+        placement = select_and_place(candidates, free_positions, targets, required_ids)
 
     order_by_pos: Dict[int, Track] = {}
     order_by_pos.update(pins)
@@ -869,6 +942,7 @@ def build_set(
         key_energy_blend=key_energy_blend,
         bad_transitions=bad_transitions,
         missing_tags=missing_tags,
+        ignored=ignored,
         phase_untagged=phase_untagged,
         not_selected=not_selected,
         shrink_warning=shrink_warning,
@@ -902,6 +976,8 @@ def main() -> None:
     ap.add_argument("--playlist-folder", default=None, help="Create a folder of numbered symlinks to the real audio files, in set order - select-all and drag straight into a new empty Rekordbox playlist. Avoids Rekordbox's XML-import path-matching quirks entirely; use this if --rekordbox-xml silently drops tracks already in your library.")
     ap.add_argument("--phase-tags", default=None, help=f"Path to a JSON file mapping {{title_substring: phase_name}} to constrain each segment of the set to only tracks tagged with the matching phase ({', '.join(PHASES)}). CLI-only convenience for testing before the web app's tagging UI exists.")
     ap.add_argument("--phase-shape", default=None, help="Comma-separated proportions for the 5 phase segments in order (opening,first_peak,valley,second_peak,closing), must sum to 1.0. Default: even split (0.2 each). Only used together with --phase-tags.")
+    ap.add_argument("--ignore", action="append", default=[], metavar="TITLE_SUBSTR", help="Exclude a track entirely, regardless of anything else. Repeatable.")
+    ap.add_argument("--require", action="append", default=[], metavar="TITLE_SUBSTR", help="Force a track to be included somewhere in the set (position still chosen by the algorithm) - bypasses phase-tag matching if needed, like --pin. Repeatable.")
     args = ap.parse_args()
 
     pool = load_pool(args.tsv)
@@ -928,6 +1004,13 @@ def main() -> None:
         if args.phase_shape:
             phase_segments = [float(x) for x in args.phase_shape.split(",")]
 
+    all_eligible_ids = {t.idx for t in pool if t.key is not None and t.energy is not None}
+    try:
+        ignored_ids = resolve_track_refs(args.ignore, pool, all_eligible_ids, "ignore")
+        required_ids = resolve_track_refs(args.require, pool, all_eligible_ids, "require")
+    except BuildError as e:
+        raise SystemExit(str(e))
+
     try:
         result = build_set(
             pool,
@@ -941,9 +1024,18 @@ def main() -> None:
             iterations=args.iterations,
             phase_groups=phase_groups,
             phase_segments=phase_segments,
+            ignored_ids=ignored_ids,
+            required_ids=required_ids,
         )
     except BuildError as e:
         raise SystemExit(str(e))
+
+    if result.ignored:
+        print(f"NOTE: {len(result.ignored)} track(s) explicitly ignored, excluded from this build:")
+        for t in result.ignored[:20]:
+            print(f"  - {t.label}")
+        if len(result.ignored) > 20:
+            print(f"  ... and {len(result.ignored) - 20} more")
 
     if result.phase_untagged:
         print(f"NOTE: {len(result.phase_untagged)} eligible track(s) have no phase tag and are excluded from this phased build:")
@@ -970,7 +1062,7 @@ def main() -> None:
         print(f"\nWrote {args.out_csv}")
 
     if args.excluded_report:
-        all_untagged = result.missing_tags + result.phase_untagged
+        all_untagged = result.missing_tags + result.ignored + result.phase_untagged
         write_excluded_report(result.not_selected, all_untagged, args.excluded_report)
         print(f"\nWrote {args.excluded_report} ({len(result.not_selected)} not selected, {len(all_untagged)} untagged)")
 
