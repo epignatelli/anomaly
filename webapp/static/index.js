@@ -57,25 +57,25 @@ async function uploadXmlFile(file) {
   }
 }
 
-async function loadPlaylists() {
-  const status = document.getElementById("status");
+let allPlaylists = [];
+
+function renderPlaylists() {
   const table = document.getElementById("playlist-table");
   const body = document.getElementById("playlist-body");
+  const noResults = document.getElementById("no-results");
+  const query = document.getElementById("playlist-search").value.trim().toLowerCase();
 
-  status.textContent = "Loading playlists…";
-  let playlists;
-  try {
-    const res = await fetch("/api/playlists");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    playlists = await res.json();
-  } catch (err) {
-    status.innerHTML = `<div class="note error">Could not load playlists: ${escapeHtml(err.message)}. Is the Rekordbox XML export path configured correctly?</div>`;
+  const filtered = query ? allPlaylists.filter((p) => p.path.toLowerCase().includes(query)) : allPlaylists;
+
+  if (filtered.length === 0) {
+    table.style.display = "none";
+    noResults.style.display = "";
     return;
   }
-
-  status.textContent = "";
   table.style.display = "";
-  body.innerHTML = playlists
+  noResults.style.display = "none";
+
+  body.innerHTML = filtered
     .map(
       (p) => `
     <tr class="playlist-row" data-path="${escapeHtml(p.path)}">
@@ -91,6 +91,23 @@ async function loadPlaylists() {
       window.location.href = `/tagging.html?playlist=${encodeURIComponent(path)}`;
     });
   });
+}
+
+async function loadPlaylists() {
+  const status = document.getElementById("status");
+
+  status.textContent = "Loading playlists…";
+  try {
+    const res = await fetch("/api/playlists");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    allPlaylists = await res.json();
+  } catch (err) {
+    status.innerHTML = `<div class="note error">Could not load playlists: ${escapeHtml(err.message)}. Is the Rekordbox XML export path configured correctly?</div>`;
+    return;
+  }
+
+  status.textContent = "";
+  renderPlaylists();
 }
 
 async function resync() {
@@ -113,5 +130,6 @@ document.getElementById("browse-btn").addEventListener("click", () => {
 document.getElementById("xml-file").addEventListener("change", (e) => {
   if (e.target.files[0]) uploadXmlFile(e.target.files[0]);
 });
+document.getElementById("playlist-search").addEventListener("input", renderPlaylists);
 loadSettings();
 loadPlaylists();

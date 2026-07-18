@@ -33,7 +33,7 @@ async function toggleTag(playlistPath, trackId, phase, isActive) {
   }
 }
 
-function rowHtml(track) {
+function rowHtml(track, position) {
   const title = escapeHtml(track.title || "");
   const artist = track.artist ? escapeHtml(track.artist) : "";
   const pills = PHASES.map((p) => {
@@ -43,6 +43,7 @@ function rowHtml(track) {
 
   return `
     <tr data-track-id="${track.track_id}">
+      <td class="playlist-count">${position}</td>
       <td>
         <div class="track-title">${title}</div>
         ${artist ? `<div class="track-artist">${artist}</div>` : ""}
@@ -83,7 +84,7 @@ async function loadTagging() {
   const table = document.getElementById("tracks-table");
   const body = document.getElementById("tracks-body");
   table.style.display = "";
-  body.innerHTML = tracks.map(rowHtml).join("");
+  body.innerHTML = tracks.map((t, i) => rowHtml(t, i + 1)).join("");
 
   body.addEventListener("click", async (e) => {
     const pill = e.target.closest(".pill");
