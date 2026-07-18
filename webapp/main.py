@@ -7,18 +7,24 @@ project root:
 
     python3 -m uvicorn webapp.main:app --reload
 
-Read-only endpoints only so far (see docs/PLAN.md for the full milestone
-list) - tags are always resolved from tag_store, but nothing writes yet.
+See docs/PLAN.md for the full milestone list.
 """
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+from typing import Optional
+
+from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel
 
 from webapp import config
 from webapp.rekordbox_reader import RBNode, flatten_playlists, parse_library, playlist_tracks
-from webapp.tag_store import get_tags
+from webapp.tag_store import get_tags, set_global_default, set_tag
 
 app = FastAPI(title="anomaly")
+
+
+class TagUpdate(BaseModel):
+    phase: Optional[str] = None
 
 
 def _load_library() -> tuple[dict, RBNode]:
@@ -63,3 +69,19 @@ def list_tracks(playlist_path: str):
         }
         for t in tracks
     ]
+
+
+@app.put("/api/playlists/{playlist_path:path}/tags/{track_id}", status_code=204)
+def set_track_tag(
+    playlist_path: str,
+    track_id: str,
+    body: TagUpdate,
+    scope: str = Query("playlist", pattern="^(playlist|global)$"),
+):
+    try:
+        if scope == "global":
+            set_global_default(config.TAGS_DB_PATH, track_id, body.phase)
+        else:
+            set_tag(config.TAGS_DB_PATH, playlist_path, track_id, body.phase)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
