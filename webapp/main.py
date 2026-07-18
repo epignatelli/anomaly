@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -34,13 +34,9 @@ from set_builder import (  # noqa: E402
 
 from webapp import build_service, config, settings_store
 from webapp.rekordbox_reader import RBNode, flatten_playlists, parse_library, playlist_tracks
-from webapp.tag_store import get_tags, set_global_default, set_tag
+from webapp.tag_store import add_global_tag, add_tag, get_tags, remove_global_tag, remove_tag
 
 app = FastAPI(title="anomaly")
-
-
-class TagUpdate(BaseModel):
-    phase: Optional[str] = None
 
 
 class SettingsUpdate(BaseModel):
@@ -94,6 +90,13 @@ def update_settings(body: SettingsUpdate):
     return get_settings()
 
 
+@app.post("/api/settings/upload")
+async def upload_settings(file: UploadFile = File(...)):
+    content = await file.read()
+    settings_store.save_uploaded_xml(content)
+    return get_settings()
+
+
 @app.get("/api/playlists")
 def list_playlists():
     _, root = _load_library()
@@ -120,24 +123,40 @@ def list_tracks(playlist_path: str):
             "bpm": t.bpm,
             "duration_s": t.total_time_s,
             "genre": t.genre,
-            "phase": tag_map.get(t.track_id),
+            "phases": tag_map.get(t.track_id, []),
         }
         for t in tracks
     ]
 
 
-@app.put("/api/playlists/{playlist_path:path}/tags/{track_id}", status_code=204)
-def set_track_tag(
+@app.put("/api/playlists/{playlist_path:path}/tags/{track_id}/{phase}", status_code=204)
+def add_track_tag(
     playlist_path: str,
     track_id: str,
-    body: TagUpdate,
+    phase: str,
     scope: str = Query("playlist", pattern="^(playlist|global)$"),
 ):
     try:
         if scope == "global":
-            set_global_default(config.TAGS_DB_PATH, track_id, body.phase)
+            add_global_tag(config.TAGS_DB_PATH, track_id, phase)
         else:
-            set_tag(config.TAGS_DB_PATH, playlist_path, track_id, body.phase)
+            add_tag(config.TAGS_DB_PATH, playlist_path, track_id, phase)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/playlists/{playlist_path:path}/tags/{track_id}/{phase}", status_code=204)
+def remove_track_tag(
+    playlist_path: str,
+    track_id: str,
+    phase: str,
+    scope: str = Query("playlist", pattern="^(playlist|global)$"),
+):
+    try:
+        if scope == "global":
+            remove_global_tag(config.TAGS_DB_PATH, track_id, phase)
+        else:
+            remove_tag(config.TAGS_DB_PATH, playlist_path, track_id, phase)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -181,7 +200,7 @@ def build(req: BuildRequest):
                 "duration_s": t.duration_s,
                 "transition_from_prev": trans,
                 "pinned": (i + 1) in result.pins,
-                "phase": phase_groups.get(t.idx) if phase_groups else None,
+                "phase": result.segment_of_position.get(i + 1) if result.segment_of_position else None,
             }
         )
 

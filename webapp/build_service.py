@@ -13,7 +13,7 @@ from __future__ import annotations
 import sys
 import uuid
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from set_builder import DEFAULT_SHAPE, BuildError, BuildResult, build_set  # noqa: E402
@@ -40,13 +40,14 @@ def run_build(
     key_weight: float = 1.0,
     key_energy_blend: float = 0.5,
     iterations: int = 20000,
-) -> tuple[str, BuildResult, Optional[Dict[int, str]]]:
+) -> tuple[str, BuildResult, Optional[Dict[int, Set[str]]]]:
     """Runs build_set() for a Rekordbox playlist, returns (build_id, result,
-    phase_groups) - phase_groups (idx -> phase name) is returned alongside so
-    the caller can annotate each row of the response with its phase, without
-    needing a second lookup against tag_store. Raises BuildError on any
-    validation problem (bad pins, unknown playlist, not enough phase-tagged
-    candidates, etc.) - the caller (main.py) turns that into an HTTP 400."""
+    phase_groups) - phase_groups (idx -> set of phase names) is returned
+    alongside so the caller can annotate each row of the response with its
+    assigned phase, without needing a second lookup against tag_store.
+    Raises BuildError on any validation problem (bad pins, unknown playlist,
+    not enough phase-tagged candidates, etc.) - the caller (main.py) turns
+    that into an HTTP 400."""
     collection, root = parse_library(settings_store.get_rekordbox_xml_path())
     playlists = dict(flatten_playlists(root))
     node = playlists.get(playlist_path)
@@ -60,9 +61,9 @@ def run_build(
     if use_phase_tags:
         tag_map = get_tags(config.TAGS_DB_PATH, playlist_path, [t.track_id for t in rb_tracks])
         phase_groups = {
-            idx: phase
+            idx: set(tag_map[tid])
             for idx, tid in idx_to_track_id.items()
-            if (phase := tag_map.get(tid)) is not None
+            if tag_map.get(tid)
         }
 
     result = build_set(

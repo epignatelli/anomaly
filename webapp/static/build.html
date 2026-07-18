@@ -34,12 +34,9 @@
 
     <div class="section">
       <h2>Energy shape</h2>
-      <div class="form-grid">
-        <div class="form-field" style="grid-column: span 2">
-          <label>Control points (pos:energy,... over [0,1] on a 0-10 scale)</label>
-          <input type="text" id="shape" style="width: 100%">
-        </div>
-      </div>
+      <p style="color: var(--text-dim); margin-top: -4px">Where the set is (0% = start, 100% = end) and what energy level (0-10) it should be there. Add as many points as you like to describe the shape.</p>
+      <div id="shape-container"></div>
+      <button type="button" class="secondary" id="add-shape-point">+ Add point</button>
     </div>
 
     <div class="section">

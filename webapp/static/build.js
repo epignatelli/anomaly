@@ -39,15 +39,51 @@ function collectPins() {
     .filter(Boolean);
 }
 
+function addShapePointRow(percent = "", energy = "") {
+  const container = document.getElementById("shape-container");
+  const row = document.createElement("div");
+  row.className = "pin-row";
+  row.innerHTML = `
+    <input type="number" min="0" max="100" placeholder="% through set" class="shape-percent" value="${escapeHtml(percent)}" style="flex:1">
+    <span style="color: var(--text-dim)">% through set →</span>
+    <input type="number" min="0" max="10" step="0.5" placeholder="Energy 0-10" class="shape-energy" value="${escapeHtml(energy)}" style="flex:1">
+    <span style="color: var(--text-dim)">energy</span>
+    <button type="button" class="secondary remove-shape-point">✕</button>`;
+  row.querySelector(".remove-shape-point").addEventListener("click", () => row.remove());
+  container.appendChild(row);
+}
+
+function populateDefaultShape() {
+  // Mirrors DEFAULT_SHAPE = "0:3,0.35:6,0.6:6,1:9", expressed as
+  // percent-through-set (0-100) instead of a raw 0-1 fraction.
+  addShapePointRow(0, 3);
+  addShapePointRow(35, 6);
+  addShapePointRow(60, 6);
+  addShapePointRow(100, 9);
+}
+
+function collectShape() {
+  const points = Array.from(document.querySelectorAll("#shape-container .pin-row"))
+    .map((row) => {
+      const percent = row.querySelector(".shape-percent").value;
+      const energy = row.querySelector(".shape-energy").value;
+      if (percent === "" || energy === "") return null;
+      return `${(parseFloat(percent) / 100).toFixed(4)}:${energy}`;
+    })
+    .filter(Boolean);
+  return points.length ? points.join(",") : DEFAULT_SHAPE;
+}
+
 function init() {
   const playlistPath = getPlaylistPath();
-  document.getElementById("shape").value = DEFAULT_SHAPE;
+  populateDefaultShape();
 
   const taggingLink = document.getElementById("tagging-link");
   taggingLink.textContent = playlistPath || "(no playlist)";
   taggingLink.href = `/tagging.html?playlist=${encodeURIComponent(playlistPath)}`;
 
   document.getElementById("add-pin").addEventListener("click", () => addPinRow());
+  document.getElementById("add-shape-point").addEventListener("click", () => addShapePointRow());
   document.getElementById("use-phase-tags").addEventListener("change", (e) => {
     document.getElementById("phase-shape-fields").style.display = e.target.checked ? "" : "none";
   });
@@ -75,7 +111,7 @@ async function onSubmit(e) {
     num_tracks: numTracks ? parseInt(numTracks, 10) : null,
     target_minutes: targetMinutes ? parseFloat(targetMinutes) : null,
     pins: collectPins(),
-    shape: document.getElementById("shape").value || DEFAULT_SHAPE,
+    shape: collectShape(),
     use_phase_tags: usePhaseTags,
     phase_shape: usePhaseTags
       ? [

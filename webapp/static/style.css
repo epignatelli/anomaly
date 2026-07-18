@@ -165,6 +165,31 @@ label { display: block; margin-bottom: 4px; color: var(--text-dim); font-size: 1
 .badge.other { border-color: var(--bad); color: var(--bad); }
 .badge.perfect { border-color: var(--good); color: var(--good); }
 
+.pill-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.pill {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.pill:hover { border-color: var(--accent); color: var(--text); }
+.pill.active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--text);
+  font-weight: 500;
+}
+.pill.loading { opacity: 0.5; cursor: wait; }
+
+.track-title { font-weight: 500; }
+.track-artist { color: var(--text-dim); font-size: 12px; }
+
 .note {
   background: var(--bg-panel);
   border: 1px solid var(--border);

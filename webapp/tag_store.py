@@ -1,13 +1,18 @@
 """
 tag_store.py
 ------------
-SQLite-backed storage for phase-group tags, keyed by (playlist_path, track_id).
+SQLite-backed storage for phase-group tags, keyed by (playlist_path,
+track_id). A track can carry more than one phase tag at once (e.g. both
+"opening" and "plateau"), so each active tag is its own row rather than a
+single column value.
 
 A track's role in a set is set-dependent (an "opener" in one set might be
 "plateau" filler in another), so tags are scoped per playlist by default,
 with a global fallback (playlist_path='') for convenience so you don't have
-to re-tag a track in every playlist it happens to appear in. Lookup order:
-exact playlist match -> global default -> untagged (None).
+to re-tag a track in every playlist it happens to appear in. Fallback rule:
+if a track has ANY playlist-specific tag rows (even just one), those are its
+complete, authoritative tag set for that playlist - the global default is
+only consulted when there are zero playlist-specific rows for that track.
 """
 from __future__ import annotations
 
@@ -15,7 +20,7 @@ import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Union
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from set_builder import PHASES  # noqa: E402
@@ -26,9 +31,9 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS track_tags (
     playlist_path TEXT NOT NULL,
     track_id      TEXT NOT NULL,
-    phase         TEXT,
+    phase         TEXT NOT NULL,
     updated_at    TEXT NOT NULL,
-    PRIMARY KEY (playlist_path, track_id)
+    PRIMARY KEY (playlist_path, track_id, phase)
 );
 """
 
@@ -39,33 +44,45 @@ def _connect(db_path: Union[str, Path]) -> sqlite3.Connection:
     return conn
 
 
-def _validate_phase(phase: Optional[str]) -> None:
-    if phase is not None and phase not in PHASES:
-        raise ValueError(f"Unknown phase '{phase}' (expected one of {PHASES}, or None to clear)")
+def _validate_phase(phase: str) -> None:
+    if phase not in PHASES:
+        raise ValueError(f"Unknown phase '{phase}' (expected one of {PHASES})")
 
 
-def set_tag(db_path: Union[str, Path], playlist_path: str, track_id: str, phase: Optional[str]) -> None:
-    """Set (or clear, if phase=None) a track's phase tag scoped to a specific
-    playlist. An explicit clear at playlist scope masks the global default
-    for that playlist (it does not fall through). Use set_global_default()
-    for the fallback row instead."""
+def add_tag(db_path: Union[str, Path], playlist_path: str, track_id: str, phase: str) -> None:
+    """Add phase to a track's tag set for this playlist. Idempotent - adding
+    a phase that's already set is a no-op (just refreshes updated_at)."""
     _validate_phase(phase)
     with _connect(db_path) as conn:
         conn.execute(
             "INSERT INTO track_tags (playlist_path, track_id, phase, updated_at) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(playlist_path, track_id) DO UPDATE SET phase=excluded.phase, updated_at=excluded.updated_at",
+            "ON CONFLICT(playlist_path, track_id, phase) DO UPDATE SET updated_at=excluded.updated_at",
             (playlist_path, track_id, phase, datetime.now(timezone.utc).isoformat()),
         )
 
 
-def set_global_default(db_path: Union[str, Path], track_id: str, phase: Optional[str]) -> None:
-    """Set a track's fallback phase tag, used when no playlist-specific tag exists."""
-    set_tag(db_path, GLOBAL_SCOPE, track_id, phase)
+def remove_tag(db_path: Union[str, Path], playlist_path: str, track_id: str, phase: str) -> None:
+    """Remove phase from a track's tag set for this playlist. Idempotent -
+    removing a phase that isn't set is a no-op."""
+    _validate_phase(phase)
+    with _connect(db_path) as conn:
+        conn.execute(
+            "DELETE FROM track_tags WHERE playlist_path = ? AND track_id = ? AND phase = ?",
+            (playlist_path, track_id, phase),
+        )
 
 
-def get_tags(db_path: Union[str, Path], playlist_path: str, track_ids: List[str]) -> Dict[str, Optional[str]]:
-    """Resolve each track_id's effective phase tag: an exact match for this
-    playlist, else the global-default row, else None (untagged)."""
+def add_global_tag(db_path: Union[str, Path], track_id: str, phase: str) -> None:
+    add_tag(db_path, GLOBAL_SCOPE, track_id, phase)
+
+
+def remove_global_tag(db_path: Union[str, Path], track_id: str, phase: str) -> None:
+    remove_tag(db_path, GLOBAL_SCOPE, track_id, phase)
+
+
+def get_tags(db_path: Union[str, Path], playlist_path: str, track_ids: List[str]) -> Dict[str, List[str]]:
+    """Resolve each track_id's effective tag set: its playlist-specific
+    phases if it has any at all, else its global-default phases, else []."""
     if not track_ids:
         return {}
     with _connect(db_path) as conn:
@@ -76,12 +93,10 @@ def get_tags(db_path: Union[str, Path], playlist_path: str, track_ids: List[str]
             (*track_ids, playlist_path, GLOBAL_SCOPE),
         ).fetchall()
 
-    exact: Dict[str, Optional[str]] = {}
-    global_default: Dict[str, Optional[str]] = {}
+    exact: Dict[str, List[str]] = {}
+    global_default: Dict[str, List[str]] = {}
     for pl, tid, phase in rows:
-        if pl == playlist_path:
-            exact[tid] = phase
-        elif pl == GLOBAL_SCOPE:
-            global_default[tid] = phase
+        target = exact if pl == playlist_path else global_default
+        target.setdefault(tid, []).append(phase)
 
-    return {tid: (exact[tid] if tid in exact else global_default.get(tid)) for tid in track_ids}
+    return {tid: (exact[tid] if tid in exact else global_default.get(tid, [])) for tid in track_ids}

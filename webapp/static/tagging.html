@@ -14,13 +14,19 @@
 </header>
 <main>
   <div id="status"></div>
-
-  <div class="unassigned-tray">
-    <h3>Unassigned</h3>
-    <div class="cards" id="unassigned-cards"></div>
-  </div>
-
-  <div class="board" id="board"></div>
+  <table id="tracks-table" style="display:none">
+    <thead>
+      <tr>
+        <th>Track</th>
+        <th>Key</th>
+        <th>En</th>
+        <th>BPM</th>
+        <th>Time</th>
+        <th>Tags (click to toggle, a track can have more than one)</th>
+      </tr>
+    </thead>
+    <tbody id="tracks-body"></tbody>
+  </table>
 </main>
 <script src="/tagging.js"></script>
 </body>

@@ -40,7 +40,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import quote
 
 import numpy as np
@@ -134,6 +134,7 @@ class BuildResult:
     phase_untagged: List[Track]    # eligible tracks with no phase tag (phased builds only, else [])
     not_selected: List[Track]      # eligible (and phase-tagged, if phased) tracks not chosen
     shrink_warning: Optional[str]  # set if the pool didn't have enough candidates to hit the requested n
+    segment_of_position: Optional[Dict[int, str]]  # 1-indexed position -> phase it was assigned to fill (phased builds only, else None)
 
 
 # ------------------------------
@@ -347,18 +348,22 @@ def phase_segment_ranges(n: int, segments: List[float]) -> Dict[str, range]:
     }
 
 
-def parse_phase_tags(path: str, pool: List[Track], eligible_ids: set) -> Dict[int, str]:
-    """Load a {title_substring: phase_name} JSON mapping, resolved via the same
-    fuzzy substring match parse_pins() uses. CLI-only convenience for testing
-    the phased algorithm before the web app's tagging UI exists."""
+def parse_phase_tags(path: str, pool: List[Track], eligible_ids: set) -> Dict[int, Set[str]]:
+    """Load a {title_substring: phase_name_or_list} JSON mapping, resolved via
+    the same fuzzy substring match parse_pins() uses. A track can be tagged
+    with more than one phase - value can be a single phase string or a list
+    of them. CLI-only convenience for testing the phased algorithm before the
+    web app's tagging UI exists."""
     with open(path) as f:
         raw = json.load(f)
 
-    phase_of: Dict[int, str] = {}
-    for needle, phase in raw.items():
-        phase = phase.strip().lower().replace(" ", "_")
-        if phase not in PHASES:
-            raise BuildError(f"--phase-tags: unknown phase '{phase}' for '{needle}' (expected one of {PHASES})")
+    phase_of: Dict[int, Set[str]] = {}
+    for needle, phases in raw.items():
+        phase_list = [phases] if isinstance(phases, str) else list(phases)
+        phase_list = [p.strip().lower().replace(" ", "_") for p in phase_list]
+        for phase in phase_list:
+            if phase not in PHASES:
+                raise BuildError(f"--phase-tags: unknown phase '{phase}' for '{needle}' (expected one of {PHASES})")
 
         matches = [t for t in pool if needle.lower() in t.label.lower()]
         if not matches:
@@ -372,7 +377,8 @@ def parse_phase_tags(path: str, pool: List[Track], eligible_ids: set) -> Dict[in
                 f"--phase-tags: '{needle}' matched '{track.label}' but it has no parseable "
                 f"Key and/or 'Energy N' comment, so it can't be placed."
             )
-        phase_of[track.idx] = phase
+        if phase_list:
+            phase_of[track.idx] = set(phase_list)
     return phase_of
 
 
@@ -380,23 +386,55 @@ def select_and_place_phased(
     candidates: List[Track],
     free_positions: List[int],
     targets: List[float],
-    phase_of: Dict[int, str],
+    phase_of: Dict[int, Set[str]],
     segment_ranges: Dict[str, range],
 ) -> Dict[int, Track]:
-    """Run select_and_place() once per phase segment, restricted to that
-    segment's positions and only candidates tagged with that phase."""
+    """One Hungarian assignment over all free positions x all candidates,
+    with a large penalty for any (position, candidate) pair where the
+    position's required phase isn't in that candidate's tag set.
+
+    This (rather than one independent assignment per segment) is what
+    correctly supports a track being eligible for multiple phases: since
+    it's a single assignment problem, a multi-tagged track can still only
+    end up in exactly one position overall - whichever of its eligible
+    segments benefits the fit most - instead of risking being selected by
+    two segments' assignments independently."""
+    if not candidates or not free_positions:
+        return {}
+    if len(candidates) < len(free_positions):
+        raise BuildError(
+            f"Only {len(candidates)} phase-tagged eligible track(s) available for {len(free_positions)} position(s)."
+        )
+
+    position_phase = {p: phase for phase, rng in segment_ranges.items() for p in rng}
+    MISMATCH_PENALTY = 1e6
+
+    cost = np.empty((len(free_positions), len(candidates)))
+    for i, pos in enumerate(free_positions):
+        t_target = targets[pos - 1]
+        pos_phase = position_phase[pos]
+        for j, track in enumerate(candidates):
+            if pos_phase in phase_of.get(track.idx, ()):
+                cost[i, j] = abs(track.energy - t_target)
+            else:
+                cost[i, j] = MISMATCH_PENALTY
+
+    row_ind, col_ind = linear_sum_assignment(cost)
+
     placement: Dict[int, Track] = {}
-    for phase in PHASES:
-        seg_positions = [p for p in free_positions if p in segment_ranges[phase]]
-        if not seg_positions:
-            continue
-        seg_candidates = [t for t in candidates if phase_of.get(t.idx) == phase]
-        if len(seg_candidates) < len(seg_positions):
-            raise BuildError(
-                f"Not enough '{phase}'-tagged eligible track(s) ({len(seg_candidates)}) "
-                f"for {len(seg_positions)} position(s) in that segment."
-            )
-        placement.update(select_and_place(seg_candidates, seg_positions, targets))
+    unresolved: Dict[str, int] = {}
+    for r, c in zip(row_ind, col_ind):
+        pos = free_positions[r]
+        if cost[r, c] >= MISMATCH_PENALTY:
+            phase = position_phase[pos]
+            unresolved[phase] = unresolved.get(phase, 0) + 1
+        else:
+            placement[pos] = candidates[c]
+
+    if unresolved:
+        detail = ", ".join(f"{count} '{phase}' position(s)" for phase, count in unresolved.items())
+        raise BuildError(f"Not enough phase-tagged eligible tracks to fill: {detail}.")
+
     return placement
 
 
@@ -449,6 +487,7 @@ def local_search(
     max_iterations: int,
     key_energy_blend: float,
     segment_of_position: Optional[Dict[int, str]] = None,
+    phase_of: Optional[Dict[int, Set[str]]] = None,
 ) -> Tuple[List[Track], float]:
     order = order[:]
     movable = [i for i in range(len(order)) if (i + 1) not in pinned_positions]
@@ -460,8 +499,16 @@ def local_search(
         for a in range(len(movable)):
             for b in range(a + 1, len(movable)):
                 i, j = movable[a], movable[b]
-                if segment_of_position is not None and segment_of_position.get(i + 1) != segment_of_position.get(j + 1):
-                    continue  # never swap tracks across a phase-segment boundary
+                if segment_of_position is not None:
+                    # A swap is only valid if both tracks' tags actually
+                    # allow the segment they'd be moving into - not just
+                    # "same segment as before" - so a track tagged with
+                    # multiple phases can still be swapped into any of them.
+                    phase_i, phase_j = segment_of_position[i + 1], segment_of_position[j + 1]
+                    tags_i = phase_of.get(order[i].idx, ()) if phase_of else ()
+                    tags_j = phase_of.get(order[j].idx, ()) if phase_of else ()
+                    if phase_j not in tags_i or phase_i not in tags_j:
+                        continue
                 order[i], order[j] = order[j], order[i]
                 new_cost = sequence_cost(order, targets, key_weight, strict, key_energy_blend)
                 if new_cost < best_cost - 1e-9:
@@ -737,7 +784,7 @@ def build_set(
     key_weight: float = 1.0,
     key_energy_blend: float = 0.5,
     iterations: int = 20000,
-    phase_groups: Optional[Dict[int, str]] = None,
+    phase_groups: Optional[Dict[int, Set[str]]] = None,
     phase_segments: Optional[List[float]] = None,
 ) -> BuildResult:
     """Run the full set-building pipeline. Raises BuildError on any
@@ -802,7 +849,7 @@ def build_set(
 
     order, _ = local_search(
         order, pinned_positions, targets, key_weight, key_strict,
-        iterations, key_energy_blend, segment_of_position,
+        iterations, key_energy_blend, segment_of_position, phase_groups,
     )
 
     bad_transitions = []
@@ -825,6 +872,7 @@ def build_set(
         phase_untagged=phase_untagged,
         not_selected=not_selected,
         shrink_warning=shrink_warning,
+        segment_of_position=segment_of_position,
     )
 
 
